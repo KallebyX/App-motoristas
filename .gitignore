@@ -10,7 +10,10 @@ coverage/
 .env
 .env.local
 .env.*.local
+!.env.example
 .vercel/
 .vscode/
 .idea/
 *.tsbuildinfo
+supabase/.temp/
+supabase/.branches/
