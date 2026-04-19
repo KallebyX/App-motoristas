@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "Prontidão Motorista",
+    "slug": "app-motoristas",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "motoristas",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.appmotoristas.driver",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Usamos a câmera para verificar sua identidade (biometria facial) antes do teste de prontidão, protegendo sua jornada e a empresa contra fraudes.",
+        "NSLocationWhenInUseUsageDescription": "Confirmamos que o teste é realizado no local de início da jornada (geofencing)."
+      }
+    },
+    "android": {
+      "package": "com.appmotoristas.driver",
+      "permissions": ["CAMERA", "ACCESS_FINE_LOCATION"],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0f172a"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permita o uso da câmera para a verificação facial antifraude."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Permita o acesso à localização para validar o ponto de partida."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
