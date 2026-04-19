@@ -14,7 +14,9 @@
     "lint": "pnpm -r lint",
     "dashboard:dev": "pnpm --filter @app-motoristas/dashboard dev",
     "mobile:start": "pnpm --filter @app-motoristas/mobile start",
-    "supabase:reset": "supabase db reset"
+    "supabase:reset": "supabase db reset",
+    "supabase:setup": "./scripts/supabase-setup.sh",
+    "supabase:deploy": "./scripts/supabase-setup.sh --remote"
   },
   "devDependencies": {
     "typescript": "5.6.3",
