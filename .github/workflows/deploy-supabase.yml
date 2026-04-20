@@ -65,21 +65,34 @@ jobs:
           echo "API region: $api_region"
           if [ -n "$api_region" ]; then SUPABASE_REGION="$api_region"; fi
 
-          # Fetch the real pooler config from the Management API instead of guessing.
           echo ""
           echo "=== Query pooler config ==="
           curl -sS --max-time 15 -o pool.json -w 'HTTP %{http_code}\n' \
             -H "Authorization: Bearer ${TOKEN}" \
             "https://api.supabase.com/v1/projects/${REF}/config/database/pooler" || true
-          cat pool.json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("pooler fields:", list(d.keys())); print(json.dumps({k:v for k,v in d.items() if k!="connection_string"}, indent=2))' || true
-          # Extract db_host + db_user + db_port; fall back to pooler host if not present.
-          POOL_HOST=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d.get("db_host") or d.get("host") or "")' 2>/dev/null)
-          POOL_USER=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d.get("db_user") or d.get("user") or "postgres.'"${REF}"'")' 2>/dev/null)
-          POOL_PORT=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d.get("db_port") or d.get("port") or 5432)' 2>/dev/null)
-          if [ -z "$POOL_HOST" ]; then
-            POOL_HOST="aws-0-${SUPABASE_REGION}.pooler.supabase.com"
-            echo "pool fallback: $POOL_HOST"
-          fi
+          python3 <<'PY'
+          import json
+          try:
+              d = json.load(open("pool.json"))
+          except Exception as e:
+              print("pool parse error:", e); raise SystemExit
+          print("pool payload type:", type(d).__name__)
+          if isinstance(d, list):
+              print("pool list length:", len(d))
+              for i, it in enumerate(d):
+                  print(f"--- item {i} ---")
+                  print(json.dumps({k:v for k,v in it.items() if k != "connection_string"}, indent=2))
+          else:
+              print(json.dumps({k:v for k,v in d.items() if k != "connection_string"}, indent=2))
+          PY
+
+          POOL_HOST=$(python3 -c 'import json; d=json.load(open("pool.json")); arr=d if isinstance(d,list) else [d]; first=arr[0] if arr else {}; print(first.get("db_host") or first.get("host") or "")')
+          POOL_USER=$(python3 -c 'import json; d=json.load(open("pool.json")); arr=d if isinstance(d,list) else [d]; first=arr[0] if arr else {}; print(first.get("db_user") or first.get("user") or "")')
+          POOL_PORT=$(python3 -c 'import json; d=json.load(open("pool.json")); arr=d if isinstance(d,list) else [d]; first=arr[0] if arr else {}; print(first.get("db_port") or first.get("port") or 5432)')
+
+          if [ -z "$POOL_USER" ]; then POOL_USER="postgres.${REF}"; fi
+          if [ -z "$POOL_HOST" ]; then POOL_HOST="aws-0-${SUPABASE_REGION}.pooler.supabase.com"; fi
+
           ENC_PW=$(python3 -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["RAW_PW"].strip(), safe=""))')
           DB_URL="postgresql://${POOL_USER}:${ENC_PW}@${POOL_HOST}:${POOL_PORT}/postgres?sslmode=require"
           echo "DB endpoint: ${POOL_HOST}:${POOL_PORT} user=${POOL_USER}"
