@@ -17,9 +17,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      # Project region for the shared connection pooler (IPv4). Default = us-east-1.
+      SUPABASE_REGION: us-east-1
     steps:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v1
@@ -30,29 +29,42 @@ jobs:
         id: deploy
         continue-on-error: true
         env:
-          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          RAW_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          RAW_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          RAW_PW: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
           set +e
           exec > >(tee deploy.log) 2>&1
+
           echo "=== Supabase CLI version ==="
           supabase --version || true
 
-          echo ""
-          echo "=== Diagnose secrets ==="
-          fail=0
-          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF SUPABASE_DB_PASSWORD; do
-            val="${!name}"
-            if [ -z "$val" ]; then
-              echo "$name: MISSING"
-              fail=1
-            else
-              echo "$name: set (length=${#val})"
-            fi
-          done
-          if [ "$fail" -eq 1 ]; then exit 1; fi
+          # Trim whitespace / control chars that may have been captured during
+          # copy-paste into the secret value.
+          TOKEN=$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')
+          REF=$(printf '%s'   "$RAW_REF"   | tr -d '[:space:]')
+          PW=$(printf '%s'    "$RAW_PW"    | tr -d '[:space:]')
+          export SUPABASE_ACCESS_TOKEN="$TOKEN"
 
-          ENC_PW=$(python3 -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["PGPASSWORD"], safe=""))')
-          DB_URL="postgresql://postgres:${ENC_PW}@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres"
+          echo ""
+          echo "=== Diagnose secrets (post-trim) ==="
+          for pair in "TOKEN:${TOKEN}" "REF:${REF}" "PW:${PW}"; do
+            name="${pair%%:*}"
+            val="${pair#*:}"
+            if [ -z "$val" ]; then echo "$name: MISSING"; else echo "$name: length=${#val}"; fi
+          done
+          # Extra token diagnosis (format only — no value).
+          if [[ "$TOKEN" =~ ^sbp_[a-f0-9]{40}$ ]]; then
+            echo "TOKEN format: OK (matches ^sbp_[a-f0-9]{40}\$)"
+          else
+            echo "TOKEN format: DOES NOT MATCH ^sbp_[a-f0-9]{40}\$ — regenerate the PAT"
+          fi
+
+          ENC_PW=$(python3 -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["RAW_PW"].strip(), safe=""))')
+          # Shared connection pooler (IPv4, session mode port 5432).
+          # Docs: https://supabase.com/docs/guides/database/connecting-to-postgres
+          DB_URL="postgresql://postgres.${REF}:${ENC_PW}@aws-0-${SUPABASE_REGION}.pooler.supabase.com:5432/postgres"
+          echo "DB host: aws-0-${SUPABASE_REGION}.pooler.supabase.com (pooler/IPv4)"
 
           echo ""
           echo "=== supabase db push ==="
@@ -62,13 +74,13 @@ jobs:
 
           echo ""
           echo "=== supabase functions deploy compute-session-score ==="
-          supabase functions deploy compute-session-score --project-ref "$SUPABASE_PROJECT_REF"
+          supabase functions deploy compute-session-score --project-ref "$REF"
           fn1_status=$?
           echo "fn1 exit: $fn1_status"
 
           echo ""
           echo "=== supabase functions deploy unico-webhook ==="
-          supabase functions deploy unico-webhook --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+          supabase functions deploy unico-webhook --project-ref "$REF" --no-verify-jwt
           fn2_status=$?
           echo "fn2 exit: $fn2_status"
 
@@ -78,18 +90,14 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ID: ${{ github.run_id }}
-          COMMIT_SHA: ${{ github.sha }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
-          # Redact any secret accidentally captured. The setup-cli masks them
-          # automatically, but double-checking is cheap.
           sed -i "s|${SUPABASE_ACCESS_TOKEN}|***TOKEN***|g" deploy.log 2>/dev/null || true
           sed -i "s|${SUPABASE_DB_PASSWORD}|***PW***|g"    deploy.log 2>/dev/null || true
-
           LOG=$(cat deploy.log)
-          # GitHub issue comment max ~65k chars; log is always small here.
           cat > body.md <<EOF
-          ### Deploy run [${RUN_ID}](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}) — commit \`${COMMIT_SHA:0:7}\`
+          ### Deploy run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) — commit \`${GITHUB_SHA:0:7}\`
 
           Outcome: **${{ steps.deploy.outcome }}**
 
@@ -101,8 +109,7 @@ jobs:
 
           </details>
           EOF
-
-          gh api repos/${GITHUB_REPOSITORY}/issues/3/comments \
+          gh api repos/${{ github.repository }}/issues/3/comments \
             --method POST \
             -f "body=$(cat body.md)" > /dev/null
 
