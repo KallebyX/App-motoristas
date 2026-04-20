@@ -4,6 +4,9 @@ on:
   workflow_run:
     workflows: ['Deploy Supabase (DB + functions)']
     types: [completed]
+  push:
+    branches: [main]
+    paths: ['.github/workflows/smoke-supabase.yml']
   workflow_dispatch:
 
 permissions:
@@ -12,7 +15,7 @@ permissions:
 
 jobs:
   smoke:
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
