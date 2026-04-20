@@ -65,9 +65,24 @@ jobs:
           echo "API region: $api_region"
           if [ -n "$api_region" ]; then SUPABASE_REGION="$api_region"; fi
 
+          # Fetch the real pooler config from the Management API instead of guessing.
+          echo ""
+          echo "=== Query pooler config ==="
+          curl -sS --max-time 15 -o pool.json -w 'HTTP %{http_code}\n' \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://api.supabase.com/v1/projects/${REF}/config/database/pooler" || true
+          cat pool.json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("pooler fields:", list(d.keys())); print(json.dumps({k:v for k,v in d.items() if k!="connection_string"}, indent=2))' || true
+          # Extract db_host + db_user + db_port; fall back to pooler host if not present.
+          POOL_HOST=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d.get("db_host") or d.get("host") or "")' 2>/dev/null)
+          POOL_USER=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d.get("db_user") or d.get("user") or "postgres.'"${REF}"'")' 2>/dev/null)
+          POOL_PORT=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d.get("db_port") or d.get("port") or 5432)' 2>/dev/null)
+          if [ -z "$POOL_HOST" ]; then
+            POOL_HOST="aws-0-${SUPABASE_REGION}.pooler.supabase.com"
+            echo "pool fallback: $POOL_HOST"
+          fi
           ENC_PW=$(python3 -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["RAW_PW"].strip(), safe=""))')
-          DB_URL="postgresql://postgres.${REF}:${ENC_PW}@aws-0-${SUPABASE_REGION}.pooler.supabase.com:5432/postgres"
-          echo "DB host: aws-0-${SUPABASE_REGION}.pooler.supabase.com"
+          DB_URL="postgresql://${POOL_USER}:${ENC_PW}@${POOL_HOST}:${POOL_PORT}/postgres?sslmode=require"
+          echo "DB endpoint: ${POOL_HOST}:${POOL_PORT} user=${POOL_USER}"
 
           echo ""
           echo "=== Apply migrations via psql ==="
