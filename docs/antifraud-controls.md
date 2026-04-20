@@ -32,6 +32,13 @@ automática).
 - Falha aberta: se o provider estiver indisponível por mais de 1 h, o
   motorista **não** é liberado — não tentamos bypass local.
 
+**Modo de teste (on-device, sem contrato):**
+`EXPO_PUBLIC_BIOMETRIC_PROVIDER=on-device` usa `expo-face-detector` localmente.
+Nesse modo **não** há match contra base CNH — a foto do motorista é
+salva em `cnh-photos` (Supabase Storage) e a empresa confirma a identidade
+no onboarding manual. Liveness continua real (ver §2). Suficiente para o
+piloto-sombra de 30 dias; antes de produção, migrar para provider comercial.
+
 ### 2) Liveness ativo (pré-teste)
 
 - Sequência aleatória de 2–3 prompts (piscar, virar a cabeça, sorrir).
