@@ -169,7 +169,9 @@ grant execute on function persist_session_score(uuid, uuid, uuid, jsonb, jsonb) 
 -- 6. Storage RLS: isolate by the first path segment matching auth.uid().
 --    Drivers upload under `<auth.uid()>/...` and can only read their own files.
 --    Managers read anything in their company via a join on drivers.user_id.
-alter table storage.objects enable row level security;
+--    (RLS is already enabled on storage.objects by Supabase default — we only
+--    manage policies here, and the `postgres` role is not the owner of that
+--    table, so trying to ALTER it would fail with "must be owner".)
 
 drop policy if exists "drivers upload cnh own folder" on storage.objects;
 create policy "drivers upload cnh own folder" on storage.objects
