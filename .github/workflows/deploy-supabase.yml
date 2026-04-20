@@ -1,4 +1,5 @@
 name: Deploy Supabase (DB + functions)
+# retry after token prefix fix (sbp_ not spb_)
 
 on:
   push:
