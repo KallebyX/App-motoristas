@@ -1,4 +1,5 @@
 name: Deploy dashboard (Vercel)
+# retrigger after secrets configured
 
 on:
   push:
