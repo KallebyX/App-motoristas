@@ -1,5 +1,4 @@
 name: Deploy dashboard (Vercel)
-# retrigger after secrets configured
 
 on:
   push:
@@ -10,6 +9,10 @@ on:
       - '.github/workflows/deploy-dashboard.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 env:
   VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
   VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_DASHBOARD }}
@@ -17,6 +20,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -24,13 +28,78 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-      - run: pnpm install --frozen-lockfile=false
-      - name: Pull Vercel environment
-        run: pnpm dlx vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
-        working-directory: apps/dashboard
-      - name: Build with Vercel
-        run: pnpm dlx vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
-        working-directory: apps/dashboard
-      - name: Deploy to Vercel
-        run: pnpm dlx vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
-        working-directory: apps/dashboard
+
+      - name: Deploy (capture log)
+        id: deploy
+        continue-on-error: true
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set +e
+          exec > >(tee deploy.log) 2>&1
+          echo "=== Secret diagnosis ==="
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            val="${!name}"
+            if [ -z "$val" ]; then echo "$name: MISSING"; else echo "$name: set (length=${#val})"; fi
+          done
+
+          echo ""
+          echo "=== pnpm install ==="
+          pnpm install --frozen-lockfile=false || exit 1
+
+          cd apps/dashboard
+          echo ""
+          echo "=== vercel --version ==="
+          pnpm dlx vercel --version || true
+
+          echo ""
+          echo "=== vercel pull ==="
+          pnpm dlx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          pull_status=$?
+          echo "pull exit: $pull_status"
+          if [ $pull_status -ne 0 ]; then exit $pull_status; fi
+
+          echo ""
+          echo "=== vercel build ==="
+          pnpm dlx vercel build --prod --token="$VERCEL_TOKEN"
+          build_status=$?
+          echo "build exit: $build_status"
+          if [ $build_status -ne 0 ]; then exit $build_status; fi
+
+          echo ""
+          echo "=== vercel deploy ==="
+          pnpm dlx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" | tee deploy-url.txt
+          deploy_status=${PIPESTATUS[0]}
+          echo "deploy exit: $deploy_status"
+          exit $deploy_status
+
+      - name: Post log to issue #3
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          sed -i "s|${VERCEL_TOKEN}|***TOKEN***|g" deploy.log 2>/dev/null || true
+          LOG=$(cat deploy.log 2>/dev/null || echo 'no log captured')
+          URL=$(cat apps/dashboard/deploy-url.txt 2>/dev/null | tail -1 || echo '')
+          cat > body.md <<EOF
+          ### Vercel deploy run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) — commit \`${GITHUB_SHA:0:7}\`
+
+          Outcome: **${{ steps.deploy.outcome }}**
+          ${URL:+URL: ${URL}}
+
+          <details><summary>deploy.log</summary>
+
+          \`\`\`
+          $LOG
+          \`\`\`
+
+          </details>
+          EOF
+          gh api repos/${{ github.repository }}/issues/3/comments \
+            --method POST \
+            -f "body=$(cat body.md)" > /dev/null
+
+      - name: Propagate failure
+        if: steps.deploy.outcome == 'failure'
+        run: exit 1
