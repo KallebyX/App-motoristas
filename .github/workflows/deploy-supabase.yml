@@ -1,5 +1,4 @@
 name: Deploy Supabase (DB + functions)
-# retry after token prefix fix (sbp_ not spb_)
 
 on:
   push:
@@ -17,6 +16,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       SUPABASE_REGION: us-west-2
     steps:
@@ -28,6 +28,7 @@ jobs:
       - name: Diagnose + deploy
         id: deploy
         continue-on-error: true
+        timeout-minutes: 8
         env:
           RAW_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           RAW_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
@@ -37,39 +38,32 @@ jobs:
           exec > >(tee deploy.log) 2>&1
 
           echo "=== Supabase CLI version ==="
-          supabase --version || true
+          timeout 10 supabase --version || true
 
           TOKEN=$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')
           REF=$(printf '%s'   "$RAW_REF"   | tr -d '[:space:]')
           PW=$(printf '%s'    "$RAW_PW"    | tr -d '[:space:]')
 
           echo ""
-          echo "=== Diagnose secrets (post-trim) ==="
+          echo "=== Diagnose secrets ==="
           echo "TOKEN length=${#TOKEN} prefix=${TOKEN:0:4}"
           echo "REF length=${#REF} value=${REF}"
           echo "PW length=${#PW}"
 
-          # Validate PAT via Management API (does not enforce CLI regex).
           echo ""
-          echo "=== Validate token via GET /v1/projects/${REF} ==="
-          http=$(curl -s -o proj.json -w '%{http_code}' \
+          echo "=== Validate token ==="
+          http=$(curl -sS --max-time 15 -o proj.json -w '%{http_code}' \
             -H "Authorization: Bearer ${TOKEN}" \
             "https://api.supabase.com/v1/projects/${REF}")
           echo "HTTP ${http}"
           if [ "$http" != "200" ]; then
-            echo "Body:"
-            cat proj.json
-            echo ""
-            echo "::error::PAT inválido ou sem acesso ao projeto. Gere novo token e atualize SUPABASE_ACCESS_TOKEN."
+            echo "Body:"; cat proj.json; echo ""
+            echo "::error::PAT inválido ou sem acesso. Gere novo token."
             exit 1
           fi
-          project_region=$(python3 -c 'import json; print(json.load(open("proj.json")).get("region",""))')
-          echo "API confirms project region: $project_region"
-          # If the user-supplied region differs from API, trust the API.
-          if [ -n "$project_region" ] && [ "$project_region" != "$SUPABASE_REGION" ]; then
-            echo "Overriding SUPABASE_REGION ($SUPABASE_REGION) with API value ($project_region)"
-            SUPABASE_REGION="$project_region"
-          fi
+          api_region=$(python3 -c 'import json; print(json.load(open("proj.json")).get("region",""))' 2>/dev/null)
+          echo "API region: $api_region"
+          if [ -n "$api_region" ]; then SUPABASE_REGION="$api_region"; fi
 
           ENC_PW=$(python3 -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["RAW_PW"].strip(), safe=""))')
           DB_URL="postgresql://postgres.${REF}:${ENC_PW}@aws-0-${SUPABASE_REGION}.pooler.supabase.com:5432/postgres"
@@ -77,58 +71,44 @@ jobs:
 
           echo ""
           echo "=== Apply migrations via psql ==="
-          apt-get >/dev/null 2>&1 install -y postgresql-client || sudo apt-get -y -qq install postgresql-client >/dev/null 2>&1
-          which psql || echo "psql missing, installing..."
-          sudo apt-get -y -qq install postgresql-client >/dev/null 2>&1
-
-          # Track migrations via supabase_migrations.schema_migrations table.
-          psql "$DB_URL" -v ON_ERROR_STOP=1 -c "create schema if not exists supabase_migrations;" -c "
+          timeout 60 psql "$DB_URL" -v ON_ERROR_STOP=1 -c "
+            create schema if not exists supabase_migrations;
             create table if not exists supabase_migrations.schema_migrations (
               version text primary key,
               statements text[],
               name text
             );"
           psql_bootstrap=$?
-          echo "psql bootstrap exit: $psql_bootstrap"
+          echo "bootstrap exit: $psql_bootstrap"
+          if [ $psql_bootstrap -ne 0 ]; then
+            echo "::error::psql cannot reach DB. Check region, pooler URL, credentials."
+            exit 1
+          fi
 
           db_status=0
           for f in supabase/migrations/*.sql; do
             ver=$(basename "$f" .sql | sed 's/_.*//')
-            already=$(psql "$DB_URL" -Atc "select 1 from supabase_migrations.schema_migrations where version='$ver'" 2>/dev/null)
+            already=$(timeout 30 psql "$DB_URL" -Atc "select 1 from supabase_migrations.schema_migrations where version='$ver'" 2>/dev/null)
             if [ "$already" = "1" ]; then
               echo "skip $f (already applied)"
               continue
             fi
             echo "apply $f"
-            psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"
+            timeout 120 psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"
             s=$?
             if [ $s -ne 0 ]; then db_status=$s; break; fi
-            psql "$DB_URL" -c "insert into supabase_migrations.schema_migrations(version,name) values('$ver','$(basename "$f" .sql)')"
+            timeout 30 psql "$DB_URL" -c "insert into supabase_migrations.schema_migrations(version,name) values('$ver','$(basename "$f" .sql)')"
           done
           echo "migrations exit: $db_status"
 
           echo ""
-          echo "=== Deploy edge functions via Management API ==="
-          deploy_function() {
-            local name="$1"
-            local verify_jwt="$2"
-            echo "--- $name ---"
-            local dir="supabase/functions/$name"
-            if [ ! -d "$dir" ]; then echo "missing $dir"; return 1; fi
-            # Install deno so we can bundle.
-            if ! command -v deno >/dev/null 2>&1; then
-              curl -sSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y >/dev/null 2>&1 || true
-              export PATH="/usr/local/bin:$PATH"
-            fi
-            # Attempt CLI deploy first (handles bundling cleanly).
-            SUPABASE_ACCESS_TOKEN="$TOKEN" supabase functions deploy "$name" --project-ref "$REF" ${verify_jwt:+--no-verify-jwt}
-            return $?
-          }
-          deploy_function compute-session-score ""
+          echo "=== Deploy edge functions via CLI ==="
+          export SUPABASE_ACCESS_TOKEN="$TOKEN"
+          timeout 120 supabase functions deploy compute-session-score --project-ref "$REF"
           fn1_status=$?
           echo "fn1 exit: $fn1_status"
 
-          deploy_function unico-webhook "no"
+          timeout 120 supabase functions deploy unico-webhook --project-ref "$REF" --no-verify-jwt
           fn2_status=$?
           echo "fn2 exit: $fn2_status"
 
@@ -160,13 +140,6 @@ jobs:
           gh api repos/${{ github.repository }}/issues/3/comments \
             --method POST \
             -f "body=$(cat body.md)" > /dev/null
-
-      - name: Upload log artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: supabase-deploy-log
-          path: deploy.log
 
       - name: Propagate failure
         if: steps.deploy.outcome == 'failure'
