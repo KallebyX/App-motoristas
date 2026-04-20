@@ -47,7 +47,9 @@ jobs:
           echo "=== pnpm install ==="
           pnpm install --frozen-lockfile=false || exit 1
 
-          cd apps/dashboard
+          # IMPORTANT: run vercel from the repo root. The Vercel project has
+          # rootDirectory=apps/dashboard configured; running the CLI from
+          # apps/dashboard causes path duplication (apps/dashboard/apps/dashboard).
           echo ""
           echo "=== vercel --version ==="
           pnpm dlx vercel --version || true
@@ -81,7 +83,7 @@ jobs:
         run: |
           sed -i "s|${VERCEL_TOKEN}|***TOKEN***|g" deploy.log 2>/dev/null || true
           LOG=$(cat deploy.log 2>/dev/null || echo 'no log captured')
-          URL=$(cat apps/dashboard/deploy-url.txt 2>/dev/null | tail -1 || echo '')
+          URL=$(cat deploy-url.txt 2>/dev/null | tail -1 || echo '')
           cat > body.md <<EOF
           ### Vercel deploy run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) — commit \`${GITHUB_SHA:0:7}\`
 
