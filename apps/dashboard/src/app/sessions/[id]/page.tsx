@@ -103,7 +103,9 @@ export default async function SessionDetailPage({ params }: { params: Promise<{ 
           <p style={{ margin: 0 }}>
             Liveness: <strong>{session.liveness_match_score ?? '—'}%</strong>
           </p>
-          <p style={{ margin: '8px 0 0' }}>Device: {session.device_fingerprint.slice(0, 16)}…</p>
+          <p style={{ margin: '8px 0 0' }}>
+            Device: {session.device_fingerprint ? `${session.device_fingerprint.slice(0, 16)}…` : '—'}
+          </p>
           <p style={{ margin: '8px 0 0' }}>
             Geofence: <strong>{session.inside_geofence == null ? '—' : session.inside_geofence ? 'OK' : 'FORA'}</strong>
           </p>

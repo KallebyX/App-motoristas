@@ -2,12 +2,6 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getSupabaseServerClient } from '@/lib/supabase-server';
 
-interface SessionRow {
-  started_at: string;
-  traffic_light: 'green' | 'yellow' | 'red' | null;
-  final_score: number | null;
-}
-
 interface CognitiveRow {
   median_rt_ms: number | null;
   lapse_rate: number | null;
@@ -22,11 +16,7 @@ export default async function AnalyticsPage() {
   const since = new Date();
   since.setDate(since.getDate() - 14);
 
-  const [{ data: sessions }, { data: cognitive }, { data: scores }] = await Promise.all([
-    supabase
-      .from('sessions')
-      .select('started_at, session_scores(traffic_light, final_score)')
-      .gte('started_at', since.toISOString()) as unknown as Promise<{ data: SessionRow[] | null }>,
+  const [{ data: cognitive }, { data: scores }] = await Promise.all([
     supabase
       .from('cognitive_results')
       .select('median_rt_ms, lapse_rate, cv_rt, sessions!inner(started_at)')
@@ -34,9 +24,9 @@ export default async function AnalyticsPage() {
       .eq('block', 'pvt_b') as unknown as Promise<{ data: CognitiveRow[] | null }>,
     supabase
       .from('session_scores')
-      .select('final_score, traffic_light, sessions!inner(started_at)')
+      .select('final_score, traffic_light, sessions!inner(started_at, driver_id)')
       .gte('sessions.started_at', since.toISOString()) as unknown as Promise<{
-      data: { final_score: number; traffic_light: string }[] | null;
+      data: { final_score: number | null; traffic_light: string | null; sessions: { driver_id: string } }[] | null;
     }>,
   ]);
 
@@ -50,16 +40,28 @@ export default async function AnalyticsPage() {
   const redRate = total === 0 ? 0 : trafficLightCounts.red / total;
 
   const rtBuckets = histogram(
-    (cognitive ?? []).map((r) => Number(r.median_rt_ms)).filter((v) => !isNaN(v)),
+    (cognitive ?? [])
+      .filter((r) => r.median_rt_ms != null)
+      .map((r) => Number(r.median_rt_ms))
+      .filter((v) => !isNaN(v)),
     [200, 250, 300, 350, 400, 450, 500, 600],
   );
   const lapseBuckets = histogram(
-    (cognitive ?? []).map((r) => Number(r.lapse_rate) * 100).filter((v) => !isNaN(v)),
+    (cognitive ?? [])
+      .filter((r) => r.lapse_rate != null)
+      .map((r) => Number(r.lapse_rate) * 100)
+      .filter((v) => !isNaN(v)),
     [0, 2, 5, 10, 15, 20, 30, 50],
   );
 
-  const finalScores = scoreRows.map((r) => Number(r.final_score)).filter((v) => !isNaN(v));
+  const finalScores = scoreRows
+    .filter((r) => r.final_score != null)
+    .map((r) => Number(r.final_score))
+    .filter((v) => !isNaN(v));
   const avgScore = finalScores.length === 0 ? 0 : finalScores.reduce((a, b) => a + b, 0) / finalScores.length;
+
+  // Distinct driver_ids, not rows.
+  const activeDrivers = new Set(scoreRows.map((r) => r.sessions?.driver_id).filter(Boolean)).size;
 
   const goNoGo = {
     sampleSize: { value: total, target: 500, ok: total >= 500 },
@@ -82,7 +84,7 @@ export default async function AnalyticsPage() {
         <Stat label="Sessões" value={total.toString()} />
         <Stat label="Score médio" value={avgScore.toFixed(1)} />
         <Stat label="Taxa de vermelho" value={`${(redRate * 100).toFixed(1)}%`} />
-        <Stat label="Motoristas ativos" value={Array.from(new Set(scoreRows)).length.toString()} />
+        <Stat label="Motoristas ativos" value={activeDrivers.toString()} />
       </section>
 
       <section style={{ marginBottom: 24 }}>
