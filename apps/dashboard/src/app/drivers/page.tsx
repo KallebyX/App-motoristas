@@ -32,9 +32,14 @@ export default async function DriversPage() {
           <h1 style={{ margin: 0, fontSize: 24 }}>Motoristas</h1>
           <p style={{ color: 'var(--muted)', margin: '4px 0 0' }}>Prontidão do último teste.</p>
         </div>
-        <Link href="/drivers/new" className="badge badge-neutral" style={{ padding: '8px 14px' }}>
-          + Convidar motorista
-        </Link>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Link href="/analytics" className="badge badge-neutral" style={{ padding: '8px 14px' }}>
+            📊 Analytics
+          </Link>
+          <Link href="/drivers/new" className="badge badge-neutral" style={{ padding: '8px 14px' }}>
+            + Convidar motorista
+          </Link>
+        </div>
       </header>
 
       {error ? (
