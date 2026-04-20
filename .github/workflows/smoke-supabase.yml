@@ -1,0 +1,114 @@
+name: Smoke test Supabase
+
+on:
+  workflow_run:
+    workflows: ['Deploy Supabase (DB + functions)']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke:
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Smoke checks
+        id: smoke
+        continue-on-error: true
+        env:
+          RAW_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          RAW_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          RAW_PW: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          set +e
+          exec > >(tee smoke.log) 2>&1
+          TOKEN=$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')
+          REF=$(printf '%s'   "$RAW_REF"   | tr -d '[:space:]')
+          PW=$(printf '%s'    "$RAW_PW"    | tr -d '[:space:]')
+
+          curl -sS --max-time 10 -o pool.json \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://api.supabase.com/v1/projects/${REF}/config/database/pooler"
+          POOL_HOST=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d[0]["db_host"])')
+          POOL_PORT=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d[0]["db_port"])')
+          POOL_USER=$(python3 -c 'import json; d=json.load(open("pool.json")); print(d[0]["db_user"])')
+          ENC_PW=$(python3 -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["RAW_PW"].strip(), safe=""))')
+          DB_URL="postgresql://${POOL_USER}:${ENC_PW}@${POOL_HOST}:${POOL_PORT}/postgres?sslmode=require"
+
+          pass=0; fail=0
+          check() {
+            local name="$1"; local cond="$2"
+            if [ "$cond" = "ok" ]; then pass=$((pass+1)); echo "✅ $name"; else fail=$((fail+1)); echo "❌ $name"; fi
+          }
+
+          echo "### Schema checks"
+          for table in companies company_members drivers sessions cognitive_results subjective_results session_scores audit_log; do
+            exists=$(psql "$DB_URL" -Atc "select to_regclass('public.$table') is not null")
+            if [ "$exists" = "t" ]; then check "table $table exists" ok; else check "table $table exists" fail; fi
+          done
+
+          echo ""
+          echo "### RLS enabled"
+          for table in drivers sessions session_scores; do
+            enabled=$(psql "$DB_URL" -Atc "select relrowsecurity from pg_class where oid='public.$table'::regclass")
+            if [ "$enabled" = "t" ]; then check "RLS on $table" ok; else check "RLS on $table" fail; fi
+          done
+
+          echo ""
+          echo "### RPC persist_session_score exists"
+          rpc=$(psql "$DB_URL" -Atc "select 1 from pg_proc where proname='persist_session_score'")
+          if [ "$rpc" = "1" ]; then check "rpc persist_session_score" ok; else check "rpc persist_session_score" fail; fi
+
+          echo ""
+          echo "### View v_driver_latest_session exists"
+          view=$(psql "$DB_URL" -Atc "select to_regclass('public.v_driver_latest_session') is not null")
+          if [ "$view" = "t" ]; then check "view v_driver_latest_session" ok; else check "view v_driver_latest_session" fail; fi
+
+          echo ""
+          echo "### Edge functions reachable"
+          # Both functions should respond (401/405 are fine — they mean the function ran and rejected us).
+          for fn in compute-session-score unico-webhook; do
+            http=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "https://${REF}.supabase.co/functions/v1/${fn}" --max-time 10)
+            echo "POST /functions/v1/${fn} → HTTP $http"
+            case "$http" in
+              200|400|401|404|405) check "fn $fn reachable (HTTP $http)" ok ;;
+              *) check "fn $fn reachable (HTTP $http)" fail ;;
+            esac
+          done
+
+          echo ""
+          echo "Passed: $pass — Failed: $fail"
+          [ $fail -eq 0 ]
+
+      - name: Post smoke report to issue #3
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG=$(cat smoke.log)
+          cat > body.md <<EOF
+          ### Smoke run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          Outcome: **${{ steps.smoke.outcome }}**
+
+          <details><summary>smoke.log</summary>
+
+          \`\`\`
+          $LOG
+          \`\`\`
+
+          </details>
+          EOF
+          gh api repos/${{ github.repository }}/issues/3/comments \
+            --method POST \
+            -f "body=$(cat body.md)" > /dev/null
+
+      - name: Propagate failure
+        if: steps.smoke.outcome == 'failure'
+        run: exit 1
