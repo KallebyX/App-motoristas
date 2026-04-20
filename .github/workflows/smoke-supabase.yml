@@ -74,6 +74,22 @@ jobs:
           if [ "$view" = "t" ]; then check "view v_driver_latest_session" ok; else check "view v_driver_latest_session" fail; fi
 
           echo ""
+          echo "### Storage buckets"
+          curl -sS --max-time 10 -o buckets.json \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://api.supabase.com/v1/projects/${REF}/storage/buckets"
+          for bucket in cnh-photos liveness-videos; do
+            exists=$(python3 -c "import json; d=json.load(open('buckets.json')); print('t' if any(b.get('name')=='$bucket' or b.get('id')=='$bucket' for b in (d if isinstance(d,list) else [])) else 'f')")
+            if [ "$exists" = "t" ]; then
+              check "bucket $bucket exists" ok
+              public=$(python3 -c "import json; d=json.load(open('buckets.json')); b=[b for b in d if b.get('name')=='$bucket' or b.get('id')=='$bucket'][0]; print(b.get('public', False))")
+              if [ "$public" = "False" ]; then check "bucket $bucket is private" ok; else check "bucket $bucket is private (got public=$public)" fail; fi
+            else
+              check "bucket $bucket exists — create at Storage → Buckets (see issue #10)" fail
+            fi
+          done
+
+          echo ""
           echo "### Edge functions reachable"
           # Both functions should respond (401/405 are fine — they mean the function ran and rejected us).
           for fn in compute-session-score unico-webhook; do
