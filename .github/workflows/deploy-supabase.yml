@@ -1,5 +1,4 @@
 name: Deploy Supabase (DB + functions)
-# retrigger: secrets populated 2026-04-20
 
 on:
   push:
@@ -25,28 +24,78 @@ jobs:
 
       - name: Diagnose secrets
         run: |
+          {
+            echo "## Secret diagnosis"
+            echo ""
+            echo "| Secret | Status |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
           fail=0
           for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF SUPABASE_DB_PASSWORD; do
             val="${!name}"
             if [ -z "$val" ]; then
+              echo "| $name | ❌ MISSING |" >> "$GITHUB_STEP_SUMMARY"
               echo "::error::$name is MISSING — add it at Settings → Secrets → Actions"
               fail=1
             else
               len=${#val}
+              echo "| $name | ✅ set (length=$len) |" >> "$GITHUB_STEP_SUMMARY"
               echo "$name: set (length=$len)"
             fi
           done
           if [ "$fail" -eq 1 ]; then exit 1; fi
 
       - name: Apply DB migrations
+        id: dbpush
+        continue-on-error: true
         env:
           PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
           DB_URL="postgresql://postgres:${PGPASSWORD}@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres"
-          supabase db push --db-url "$DB_URL"
+          # Write command + output to step summary for public debugging.
+          {
+            echo ""
+            echo "## supabase db push"
+            echo ""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          supabase db push --db-url "$DB_URL" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          status=${PIPESTATUS[0]}
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit $status
 
       - name: Deploy edge function (compute-session-score)
-        run: supabase functions deploy compute-session-score --project-ref "$SUPABASE_PROJECT_REF"
+        id: fn1
+        continue-on-error: true
+        run: |
+          {
+            echo ""
+            echo "## deploy compute-session-score"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          supabase functions deploy compute-session-score --project-ref "$SUPABASE_PROJECT_REF" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          status=${PIPESTATUS[0]}
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit $status
 
       - name: Deploy edge function (unico-webhook)
-        run: supabase functions deploy unico-webhook --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+        id: fn2
+        continue-on-error: true
+        run: |
+          {
+            echo ""
+            echo "## deploy unico-webhook"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          supabase functions deploy unico-webhook --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          status=${PIPESTATUS[0]}
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Final verdict
+        run: |
+          ok=true
+          if [ "${{ steps.dbpush.outcome }}" != "success" ]; then echo "::error::db push failed"; ok=false; fi
+          if [ "${{ steps.fn1.outcome }}" != "success" ]; then echo "::error::compute-session-score deploy failed"; ok=false; fi
+          if [ "${{ steps.fn2.outcome }}" != "success" ]; then echo "::error::unico-webhook deploy failed"; ok=false; fi
+          $ok
