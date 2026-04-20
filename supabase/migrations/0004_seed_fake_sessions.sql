@@ -6,7 +6,7 @@
 
 do $$
 declare
-  v_company_id uuid := '00000000-0000-0000-0000-000000000001';
+  v_company_id uuid;
   v_driver record;
   v_day int;
   v_session_id uuid;
@@ -18,7 +18,15 @@ declare
   v_sp int;
   v_start timestamptz;
 begin
-  -- Guard: skip if the demo company already has sessions (avoids duplication).
+  -- Use the pilot company inserted by migration 0003 (CNPJ 00000000000000).
+  -- This makes the seed self-sufficient regardless of seed.sql having run.
+  select id into v_company_id from companies where cnpj = '00000000000000';
+  if v_company_id is null then
+    raise notice 'seed: pilot company not found (0003 must run first) — skipping';
+    return;
+  end if;
+
+  -- Guard: skip if the company already has sessions (avoids duplication).
   if exists (select 1 from sessions where company_id = v_company_id) then
     raise notice 'seed: company % already has sessions — skipping', v_company_id;
     return;
