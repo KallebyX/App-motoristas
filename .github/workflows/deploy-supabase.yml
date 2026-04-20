@@ -1,4 +1,5 @@
 name: Deploy Supabase (DB + functions)
+# retrigger: secrets populated 2026-04-20
 
 on:
   push:
