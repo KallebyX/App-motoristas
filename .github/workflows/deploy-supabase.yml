@@ -1,4 +1,5 @@
 name: Deploy Supabase (DB + functions)
+# trigger smoke test chain
 
 on:
   push:
