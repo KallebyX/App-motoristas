@@ -21,11 +21,31 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
-      - name: Link project
-        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
-      - name: Push DB migrations
-        run: supabase db push --password "$SUPABASE_DB_PASSWORD"
-      - name: Deploy edge functions
+
+      - name: Diagnose secrets
         run: |
-          supabase functions deploy compute-session-score --no-verify-jwt=false
-          supabase functions deploy unico-webhook --no-verify-jwt
+          fail=0
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF SUPABASE_DB_PASSWORD; do
+            val="${!name}"
+            if [ -z "$val" ]; then
+              echo "::error::$name is MISSING — add it at Settings → Secrets → Actions"
+              fail=1
+            else
+              len=${#val}
+              echo "$name: set (length=$len)"
+            fi
+          done
+          if [ "$fail" -eq 1 ]; then exit 1; fi
+
+      - name: Apply DB migrations
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          DB_URL="postgresql://postgres:${PGPASSWORD}@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres"
+          supabase db push --db-url "$DB_URL"
+
+      - name: Deploy edge function (compute-session-score)
+        run: supabase functions deploy compute-session-score --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Deploy edge function (unico-webhook)
+        run: supabase functions deploy unico-webhook --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
