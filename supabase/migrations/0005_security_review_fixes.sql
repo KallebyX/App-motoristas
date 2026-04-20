@@ -43,14 +43,13 @@ left join session_scores ss on ss.session_id = s.id
 order by d.id, s.started_at desc nulls last;
 
 -- 3. Composite FK: sessions.driver_id MUST match a driver in the same company.
---    Add a unique on (id, company_id) that the FK can reference.
+--    Drop the dependent FK first, then the unique, then recreate both.
+alter table sessions
+  drop constraint if exists sessions_driver_company_fk;
 alter table drivers
   drop constraint if exists drivers_id_company_id_key;
 alter table drivers
   add constraint drivers_id_company_id_key unique (id, company_id);
-
-alter table sessions
-  drop constraint if exists sessions_driver_company_fk;
 alter table sessions
   add constraint sessions_driver_company_fk
   foreign key (driver_id, company_id)
