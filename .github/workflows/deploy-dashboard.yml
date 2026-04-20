@@ -54,23 +54,12 @@ jobs:
           echo "=== vercel --version ==="
           pnpm dlx vercel --version || true
 
+          # Use Vercel's server-side build (remote build). It picks the correct
+          # framework preset from project settings + vercel.json automatically.
+          # This avoids the local CLI's framework detection issues.
           echo ""
-          echo "=== vercel pull ==="
-          pnpm dlx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-          pull_status=$?
-          echo "pull exit: $pull_status"
-          if [ $pull_status -ne 0 ]; then exit $pull_status; fi
-
-          echo ""
-          echo "=== vercel build ==="
-          pnpm dlx vercel build --prod --token="$VERCEL_TOKEN"
-          build_status=$?
-          echo "build exit: $build_status"
-          if [ $build_status -ne 0 ]; then exit $build_status; fi
-
-          echo ""
-          echo "=== vercel deploy ==="
-          pnpm dlx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" | tee deploy-url.txt
+          echo "=== vercel deploy (remote build) ==="
+          pnpm dlx vercel deploy --prod --yes --token="$VERCEL_TOKEN" 2>&1 | tee deploy-url.txt
           deploy_status=${PIPESTATUS[0]}
           echo "deploy exit: $deploy_status"
           exit $deploy_status
