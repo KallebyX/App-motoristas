@@ -13,6 +13,7 @@ values (
 on conflict (cnpj) do update set
   block_policy = '{"yellow":"warn","red":"warn"}'::jsonb;
 
--- Index to speed up pilot reports (sessions by day/company).
-create index if not exists sessions_company_started_idx
-  on sessions (company_id, date_trunc('day', started_at));
+-- NOTE: removed the (company_id, date_trunc('day', started_at)) index —
+-- date_trunc(timestamptz) is STABLE not IMMUTABLE so Postgres refuses it
+-- in index expressions. The existing (company_id, started_at desc) index
+-- from 0001_init already covers the daily report queries.
