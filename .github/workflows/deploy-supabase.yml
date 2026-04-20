@@ -22,80 +22,63 @@ jobs:
         with:
           version: latest
 
-      - name: Diagnose secrets
-        run: |
-          {
-            echo "## Secret diagnosis"
-            echo ""
-            echo "| Secret | Status |"
-            echo "|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          fail=0
-          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF SUPABASE_DB_PASSWORD; do
-            val="${!name}"
-            if [ -z "$val" ]; then
-              echo "| $name | ❌ MISSING |" >> "$GITHUB_STEP_SUMMARY"
-              echo "::error::$name is MISSING — add it at Settings → Secrets → Actions"
-              fail=1
-            else
-              len=${#val}
-              echo "| $name | ✅ set (length=$len) |" >> "$GITHUB_STEP_SUMMARY"
-              echo "$name: set (length=$len)"
-            fi
-          done
-          if [ "$fail" -eq 1 ]; then exit 1; fi
-
-      - name: Apply DB migrations
-        id: dbpush
+      - name: Diagnose + deploy
+        id: deploy
         continue-on-error: true
         env:
           PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
-          DB_URL="postgresql://postgres:${PGPASSWORD}@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres"
-          # Write command + output to step summary for public debugging.
-          {
-            echo ""
-            echo "## supabase db push"
-            echo ""
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          supabase db push --db-url "$DB_URL" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
-          status=${PIPESTATUS[0]}
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          exit $status
+          set +e
+          exec > >(tee deploy.log) 2>&1
+          echo "=== Diagnose secrets ==="
+          fail=0
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF SUPABASE_DB_PASSWORD; do
+            val="${!name}"
+            if [ -z "$val" ]; then
+              echo "$name: MISSING"
+              fail=1
+            else
+              echo "$name: set (length=${#val})"
+            fi
+          done
+          if [ "$fail" -eq 1 ]; then exit 1; fi
 
-      - name: Deploy edge function (compute-session-score)
-        id: fn1
-        continue-on-error: true
-        run: |
-          {
-            echo ""
-            echo "## deploy compute-session-score"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          supabase functions deploy compute-session-score --project-ref "$SUPABASE_PROJECT_REF" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
-          status=${PIPESTATUS[0]}
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          exit $status
+          # URL-encode password for safe embedding into the connection string.
+          ENC_PW=$(python3 -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["PGPASSWORD"], safe=""))')
+          DB_URL="postgresql://postgres:${ENC_PW}@db.${SUPABASE_PROJECT_REF}.supabase.co:5432/postgres"
 
-      - name: Deploy edge function (unico-webhook)
-        id: fn2
-        continue-on-error: true
-        run: |
-          {
-            echo ""
-            echo "## deploy unico-webhook"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          supabase functions deploy unico-webhook --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
-          status=${PIPESTATUS[0]}
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          exit $status
+          echo ""
+          echo "=== supabase db push ==="
+          supabase db push --db-url "$DB_URL"
+          db_status=$?
+          echo "db push exit: $db_status"
 
-      - name: Final verdict
-        run: |
-          ok=true
-          if [ "${{ steps.dbpush.outcome }}" != "success" ]; then echo "::error::db push failed"; ok=false; fi
-          if [ "${{ steps.fn1.outcome }}" != "success" ]; then echo "::error::compute-session-score deploy failed"; ok=false; fi
-          if [ "${{ steps.fn2.outcome }}" != "success" ]; then echo "::error::unico-webhook deploy failed"; ok=false; fi
-          $ok
+          echo ""
+          echo "=== supabase functions deploy compute-session-score ==="
+          supabase functions deploy compute-session-score --project-ref "$SUPABASE_PROJECT_REF"
+          fn1_status=$?
+          echo "fn1 exit: $fn1_status"
+
+          echo ""
+          echo "=== supabase functions deploy unico-webhook ==="
+          supabase functions deploy unico-webhook --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+          fn2_status=$?
+          echo "fn2 exit: $fn2_status"
+
+          echo ""
+          echo "=== Supabase CLI version ==="
+          supabase --version || true
+
+          # Fail the step if anything went wrong, but after logging everything.
+          [ $db_status -eq 0 ] && [ $fn1_status -eq 0 ] && [ $fn2_status -eq 0 ]
+
+      - name: Upload log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supabase-deploy-log
+          path: deploy.log
+
+      - name: Propagate failure
+        if: steps.deploy.outcome == 'failure'
+        run: exit 1
