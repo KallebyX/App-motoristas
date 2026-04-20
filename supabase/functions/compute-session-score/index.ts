@@ -44,29 +44,39 @@ serve(async (req) => {
   const submission = parsed.data;
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (!supabaseUrl || !anonKey || !serviceRoleKey) {
+    const missing = [
+      !supabaseUrl && 'SUPABASE_URL',
+      !anonKey && 'SUPABASE_ANON_KEY',
+      !serviceRoleKey && 'SUPABASE_SERVICE_ROLE_KEY',
+    ].filter(Boolean);
+    return json({ error: 'server misconfigured', missing }, 500);
+  }
   const userJwt = auth.replace(/^Bearer /i, '');
 
   // 1) Authenticate the driver via their JWT (anon key path).
-  const userClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY'), {
+  const userClient = createClient(supabaseUrl, anonKey, {
     global: { headers: { Authorization: `Bearer ${userJwt}` } },
   });
   const { data: userRes, error: userErr } = await userClient.auth.getUser();
   if (userErr || !userRes.user) return json({ error: 'unauthorized' }, 401);
-  if (userRes.user.id !== submission.driverId)
-    return json({ error: 'driver id mismatch with JWT' }, 403);
 
   // 2) Service-role client for privileged writes (bypasses RLS — safe here
   //    because we just verified the driver above).
   const admin = createClient(supabaseUrl, serviceRoleKey);
 
-  // 3) Resolve driver + company policy.
+  // 3) Resolve the driver row via auth.users mapping (drivers.user_id).
+  //    The submission's driverId must match the driver row derived from the JWT.
   const { data: driver, error: dErr } = await admin
     .from('drivers')
     .select('id, company_id, status, companies!inner(block_policy)')
-    .eq('id', submission.driverId)
+    .eq('user_id', userRes.user.id)
     .single();
-  if (dErr || !driver) return json({ error: 'driver not found' }, 404);
+  if (dErr || !driver) return json({ error: 'driver not found for authenticated user' }, 404);
+  if (driver.id !== submission.driverId)
+    return json({ error: 'driver id mismatch with authenticated driver' }, 403);
   if (driver.status !== 'active') return json({ error: `driver status ${driver.status}` }, 403);
 
   const policy = BlockPolicySchema.parse(

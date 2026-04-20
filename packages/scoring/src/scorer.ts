@@ -37,12 +37,24 @@ export function computeBlockMetrics(block: BlockResult): BlockMetrics {
   const validTrials: Trial[] = block.trials.filter((t) => !t.isFalseStart && t.rtMs != null);
   const rts = validTrials.map((t) => t.rtMs as number);
   const falseStarts = block.trials.filter((t) => t.isFalseStart).length;
-
-  const med = rts.length > 0 ? median(rts) : 0;
-  const lapses = validTrials.filter((t) => t.isLapse).length;
-  const lapseRate = validTrials.length > 0 ? lapses / validTrials.length : 0;
-  const cv = rts.length > 1 ? coefficientOfVariation(rts) : 0;
   const falseStartRate = block.trials.length > 0 ? falseStarts / block.trials.length : 0;
+
+  // Block with zero valid responses is a hard penalty. Returning zeros would
+  // produce an artificially high z-score, turning an invalid session green.
+  if (validTrials.length === 0) {
+    return {
+      medianRtMs: PVT_B_NORMS.medianRtMs.mean + 4 * PVT_B_NORMS.medianRtMs.sd,
+      lapseRate: 1,
+      cvRt: PVT_B_NORMS.cvRt.mean + 4 * PVT_B_NORMS.cvRt.sd,
+      falseStartRate,
+      zScore: -4,
+    };
+  }
+
+  const med = median(rts);
+  const lapses = validTrials.filter((t) => t.isLapse).length;
+  const lapseRate = lapses / validTrials.length;
+  const cv = rts.length > 1 ? coefficientOfVariation(rts) : 0;
 
   // Compose a single Z for the block: average across RT, lapses and CV (higher = worse).
   // Negate so that LOWER RT/lapse → positive Z (better performance).
