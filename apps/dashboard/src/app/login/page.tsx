@@ -41,6 +41,11 @@ export default function Login() {
   return (
     <main className="page" style={{ maxWidth: 420 }}>
       <h1>Entrar no painel</h1>
+      <p style={{ color: 'var(--muted)', fontSize: 11, margin: '0 0 16px' }}>
+        build: 1813fa6 · env-url:{' '}
+        {process.env.NEXT_PUBLIC_SUPABASE_URL ? '✓ ok' : '✗ missing'} · env-key:{' '}
+        {process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? '✓ ok' : '✗ missing'}
+      </p>
       <form onSubmit={submit} className="card" style={{ display: 'grid', gap: 12 }}>
         <label>
           <div style={{ color: 'var(--muted)', fontSize: 12 }}>E-mail</div>
