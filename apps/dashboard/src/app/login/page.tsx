@@ -15,14 +15,27 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    );
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) setError(error.message);
-    else router.push('/drivers');
+    try {
+      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      if (!url || !key) {
+        throw new Error(
+          'Config ausente: NEXT_PUBLIC_SUPABASE_URL/_ANON_KEY não estão no bundle. ' +
+            'Defina em vercel.com → Settings → Environment Variables e refaça o deploy.',
+        );
+      }
+      const supabase = createBrowserClient(url, key);
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      router.push('/drivers');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
