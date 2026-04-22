@@ -5,21 +5,25 @@ import { z } from 'zod';
 import { getSupabaseServerClient } from '@/lib/supabase-server';
 import { getSupabaseAdminClient } from '@/lib/supabase-admin';
 
+// Treat empty strings as undefined before the field-level validators
+// run, so optional fields don't end up as '' in the DB.
+const optionalString = (inner: z.ZodType<string>) =>
+  z
+    .string()
+    .trim()
+    .transform((v) => (v === '' ? undefined : v))
+    .pipe(inner.optional());
+
 const InviteSchema = z.object({
   full_name: z.string().trim().min(3, 'Nome muito curto'),
   cpf: z.string().trim().regex(/^\d{11}$/, 'CPF deve ter 11 dígitos'),
   cnh_number: z.string().trim().min(3, 'CNH obrigatória'),
-  cnh_category: z.string().trim().max(5).optional().or(z.literal('').transform(() => undefined)),
+  cnh_category: optionalString(z.string().max(5, 'Categoria muito longa')),
   phone: z
     .string()
     .trim()
     .regex(/^\+[1-9]\d{7,14}$/, 'Telefone precisa estar em E.164 (ex.: +5551999998888)'),
-  email: z
-    .string()
-    .trim()
-    .email('E-mail inválido')
-    .optional()
-    .or(z.literal('').transform(() => undefined)),
+  email: optionalString(z.string().email('E-mail inválido')),
   password: z.string().min(6, 'Senha mínima de 6 caracteres'),
 });
 
@@ -86,14 +90,37 @@ export async function inviteDriver(formData: FormData): Promise<InviteResult> {
     .single();
 
   if (insertErr || !driver) {
-    await admin.auth.admin.deleteUser(created.user.id);
     const msg = insertErr?.message ?? 'insert failed';
-    return {
-      ok: false,
-      error: msg.includes('drivers_company_id_cpf_key')
-        ? 'CPF já cadastrado nesta empresa.'
-        : `Driver: ${msg}`,
-    };
+    const rawErr = msg.toLowerCase();
+
+    const friendly = rawErr.includes('drivers_company_id_cpf_key')
+      ? 'CPF já cadastrado nesta empresa.'
+      : rawErr.includes('drivers_user_id_uniq')
+        ? 'Já existe um motorista vinculado a este usuário.'
+        : rawErr.includes('duplicate key') && rawErr.includes('phone')
+          ? 'Telefone já cadastrado.'
+          : 'Não foi possível cadastrar o motorista. Verifique os dados e tente novamente.';
+
+    // Roll back the auth user so we don't leave orphans. If the delete
+    // itself fails, surface it so the operator can clean up manually —
+    // silently swallowing it would leave an account that still resolves
+    // in listUsers with no driver row, which is the exact bug we want to
+    // avoid.
+    const { error: deleteErr } = await admin.auth.admin.deleteUser(created.user.id);
+    if (deleteErr) {
+      console.error('[inviteDriver] rollback deleteUser failed', {
+        user_id: created.user.id,
+        insert_error: msg,
+        delete_error: deleteErr.message,
+      });
+      return {
+        ok: false,
+        error: `${friendly} Aviso: usuário de auth ${created.user.id.slice(0, 8)}… ficou órfão — remova manualmente no Supabase Dashboard.`,
+      };
+    }
+
+    console.error('[inviteDriver] driver insert failed (auth user rolled back)', { insert_error: msg });
+    return { ok: false, error: friendly };
   }
 
   revalidatePath('/drivers');

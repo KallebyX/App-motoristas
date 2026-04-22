@@ -17,12 +17,17 @@ export default function InviteDriverPage() {
     setFieldErr(null);
     const fd = new FormData(e.currentTarget);
     startTransition(async () => {
-      const r = await inviteDriver(fd);
-      setResult(r);
-      if (r.ok) {
-        setTimeout(() => router.push('/drivers'), 1500);
-      } else if (r.field) {
-        setFieldErr(r.field);
+      try {
+        const r = await inviteDriver(fd);
+        setResult(r);
+        if (r.ok) {
+          setTimeout(() => router.push('/drivers'), 1500);
+        } else if (r.field) {
+          setFieldErr(r.field);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setResult({ ok: false, error: `Erro inesperado: ${msg.slice(0, 200)}` });
       }
     });
   }
@@ -55,7 +60,7 @@ export default function InviteDriverPage() {
       <form onSubmit={onSubmit} className="card" style={{ display: 'grid', gap: 12 }}>
         <Field label="Nome completo" name="full_name" invalid={fieldErr === 'full_name'} required placeholder="José da Silva" />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <Field label="CPF (só números)" name="cpf" invalid={fieldErr === 'cpf'} required placeholder="00000000000" maxLength={11} pattern="\d{11}" inputMode="numeric" />
+          <Field label="CPF (só números)" name="cpf" invalid={fieldErr === 'cpf'} required placeholder="00000000000" maxLength={11} pattern="[0-9]{11}" inputMode="numeric" />
           <Field label="Telefone (E.164)" name="phone" invalid={fieldErr === 'phone'} required placeholder="+5551999998888" />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>

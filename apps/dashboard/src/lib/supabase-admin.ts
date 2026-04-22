@@ -1,9 +1,11 @@
+import 'server-only';
+
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-// Service-role client. NEVER import this file from anything that gets
-// bundled for the browser — the service key bypasses RLS and would be a
-// critical leak. Server-only paths: server actions, route handlers, RSC
-// fetches gated behind an auth check.
+// Service-role client. `server-only` throws at bundle time if this module
+// is ever imported from a client component — the service key bypasses RLS
+// and would be a critical leak. Use from server actions, route handlers,
+// or RSC fetches gated behind an auth check.
 export function getSupabaseAdminClient(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
