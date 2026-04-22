@@ -68,11 +68,47 @@ jobs:
           echo "pull exit: $pull_status"
           if [ $pull_status -ne 0 ]; then exit $pull_status; fi
 
+          # Diagnose + bridge env vars from .vercel/.env.production.local into
+          # the next build.
+          #
+          # Why this step exists: `vercel build` outside Vercel's cloud runs
+          # with "WARNING! Build not running on Vercel. System environment
+          # variables will not be available." — vars from
+          # .vercel/.env.production.local are NOT propagated into the
+          # subprocess that runs the custom buildCommand (`pnpm next build`).
+          # Empirically: Next.js cannot see NEXT_PUBLIC_* and fails prerender,
+          # or (worse) succeeds but ships an empty client bundle with no
+          # NEXT_PUBLIC_* baked in, breaking the login page at runtime.
+          #
+          # Fix: (1) export every var from the pull file into the current
+          # shell so `vercel build` inherits them, AND (2) copy the same file
+          # into apps/dashboard/.env.production.local so Next.js's native
+          # dotenv loader picks it up during `next build` regardless.
+          echo ""
+          echo "=== env bridge (.vercel/.env.production.local -> shell + apps/dashboard) ==="
+          ENV_FILE=.vercel/.env.production.local
+          if [ ! -f "$ENV_FILE" ]; then
+            echo "::error::$ENV_FILE not found after vercel pull; aborting"
+            exit 1
+          fi
+          # keys-only diagnostic (values stay hidden)
+          grep -oE '^[A-Za-z_][A-Za-z0-9_]*' "$ENV_FILE" | sort -u | sed 's/^/key: /'
+          echo "NEXT_PUBLIC_* keys present: $(grep -cE '^NEXT_PUBLIC_' "$ENV_FILE")"
+          set -a
+          # shellcheck disable=SC1090
+          . "$ENV_FILE"
+          set +a
+          mkdir -p apps/dashboard
+          cp "$ENV_FILE" apps/dashboard/.env.production.local
+          echo "copied -> apps/dashboard/.env.production.local"
+
           echo ""
           echo "=== vercel build ==="
           pnpm dlx vercel build --prod --token="$VERCEL_TOKEN"
           build_status=$?
           echo "build exit: $build_status"
+          # Scrub secret file before any later step can archive logs/artifacts.
+          rm -f apps/dashboard/.env.production.local
           if [ $build_status -ne 0 ]; then exit $build_status; fi
 
           echo ""
