@@ -68,8 +68,7 @@ jobs:
           echo "pull exit: $pull_status"
           if [ $pull_status -ne 0 ]; then exit $pull_status; fi
 
-          # Diagnose + bridge env vars from .vercel/.env.production.local into
-          # the next build.
+          # Bridge env vars from .vercel/.env.production.local into next build.
           #
           # Why this step exists: `vercel build` outside Vercel's cloud runs
           # with "WARNING! Build not running on Vercel. System environment
@@ -80,24 +79,25 @@ jobs:
           # or (worse) succeeds but ships an empty client bundle with no
           # NEXT_PUBLIC_* baked in, breaking the login page at runtime.
           #
-          # Fix: (1) export every var from the pull file into the current
-          # shell so `vercel build` inherits them, AND (2) copy the same file
-          # into apps/dashboard/.env.production.local so Next.js's native
-          # dotenv loader picks it up during `next build` regardless.
+          # Fix: drop the pull file at apps/dashboard/.env.production.local
+          # so Next.js's native dotenv loader picks it up during next build.
+          # We deliberately do NOT `source` the file into the shell: .env
+          # files are not shell-safe (backticks / $() in values would execute
+          # during CI), and the dotenv path is sufficient since next build is
+          # invoked from apps/dashboard (the Vercel project rootDirectory).
           echo ""
-          echo "=== env bridge (.vercel/.env.production.local -> shell + apps/dashboard) ==="
+          echo "=== env bridge (.vercel/.env.production.local -> apps/dashboard) ==="
           ENV_FILE=.vercel/.env.production.local
           if [ ! -f "$ENV_FILE" ]; then
             echo "::error::$ENV_FILE not found after vercel pull; aborting"
             exit 1
           fi
-          # keys-only diagnostic (values stay hidden)
-          grep -oE '^[A-Za-z_][A-Za-z0-9_]*' "$ENV_FILE" | sort -u | sed 's/^/key: /'
-          echo "NEXT_PUBLIC_* keys present: $(grep -cE '^NEXT_PUBLIC_' "$ENV_FILE")"
-          set -a
-          # shellcheck disable=SC1090
-          . "$ENV_FILE"
-          set +a
+          # Only NEXT_PUBLIC_* key names go to the log: that is the signal
+          # this diagnostic needs (are client-facing vars present?), and it
+          # avoids echoing internal/infra var names into the public issue log.
+          echo "NEXT_PUBLIC_* keys in pull file:"
+          grep -oE '^NEXT_PUBLIC_[A-Za-z0-9_]+' "$ENV_FILE" | sort -u | sed 's/^/  - /' || true
+          echo "NEXT_PUBLIC_* count: $(grep -cE '^NEXT_PUBLIC_' "$ENV_FILE" || echo 0)"
           mkdir -p apps/dashboard
           cp "$ENV_FILE" apps/dashboard/.env.production.local
           echo "copied -> apps/dashboard/.env.production.local"
