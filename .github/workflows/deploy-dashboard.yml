@@ -165,12 +165,19 @@ jobs:
           pnpm dlx vercel build --prod --token="$VERCEL_TOKEN"
           build_status=$?
           echo "build exit: $build_status"
-          # Scrub secret file before any later step can archive logs/artifacts.
-          rm -f apps/dashboard/.env.production.local
-          if [ $build_status -ne 0 ]; then exit $build_status; fi
+          if [ $build_status -ne 0 ]; then
+            rm -f apps/dashboard/.env.production.local
+            exit $build_status
+          fi
 
           echo ""
           echo "=== vercel deploy --prebuilt ==="
+          # Keep apps/dashboard/.env.production.local on disk through the
+          # deploy step: `vercel deploy --prebuilt` re-validates project files
+          # against .vercel/output metadata and errors with
+          # `File does not exist: "apps/dashboard/.env.production.local"` if
+          # we scrub it here. The values it contains are all NEXT_PUBLIC_*
+          # (already public by design), so uploading them is a non-issue.
           for attempt in 1 2 3; do
             echo "attempt $attempt"
             pnpm dlx vercel deploy --prebuilt --prod --yes --token="$VERCEL_TOKEN" 2>&1 | tee deploy-url.txt
@@ -180,6 +187,8 @@ jobs:
             sleep 10
           done
           echo "deploy exit: $deploy_status"
+          # Scrub only after deploy completes (or exhausts retries).
+          rm -f apps/dashboard/.env.production.local
           exit $deploy_status
 
       - name: Post log to issue #3
