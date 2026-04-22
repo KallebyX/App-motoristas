@@ -35,11 +35,21 @@ jobs:
         continue-on-error: true
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          # Optional fallback. If the VERCEL_TOKEN lacks the Env scope, or an
+          # env var was saved in the Vercel dashboard with an empty value,
+          # `vercel pull` produces an .env file whose NEXT_PUBLIC_* values are
+          # empty — Next.js then inlines "" and the runtime guard trips with
+          # "Missing NEXT_PUBLIC_*". Setting these GitHub Actions secrets
+          # overrides the pulled file, forcing correct values into the build.
+          FALLBACK_NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          FALLBACK_NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
           set +e
           exec > >(tee deploy.log) 2>&1
           echo "=== Secret diagnosis ==="
-          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID \
+                      FALLBACK_NEXT_PUBLIC_SUPABASE_URL \
+                      FALLBACK_NEXT_PUBLIC_SUPABASE_ANON_KEY; do
             val="${!name}"
             if [ -z "$val" ]; then echo "$name: MISSING"; else echo "$name: set (length=${#val})"; fi
           done
@@ -95,12 +105,60 @@ jobs:
           # Only NEXT_PUBLIC_* key names go to the log: that is the signal
           # this diagnostic needs (are client-facing vars present?), and it
           # avoids echoing internal/infra var names into the public issue log.
-          echo "NEXT_PUBLIC_* keys in pull file:"
-          grep -oE '^NEXT_PUBLIC_[A-Za-z0-9_]+' "$ENV_FILE" | sort -u | sed 's/^/  - /' || true
-          echo "NEXT_PUBLIC_* count: $(grep -cE '^NEXT_PUBLIC_' "$ENV_FILE" || echo 0)"
+          echo "pull file: $(wc -c < "$ENV_FILE") bytes, $(wc -l < "$ENV_FILE") lines"
+          echo "NEXT_PUBLIC_* in pull file (name + value length, value hidden):"
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            k="${line%%=*}"
+            v="${line#*=}"
+            # Strip optional surrounding quotes for accurate length reporting.
+            case "$v" in "\""*"\"") v="${v#\"}"; v="${v%\"}";; esac
+            printf '  - %s: value-len=%d\n' "$k" "${#v}"
+          done < <(grep -E '^NEXT_PUBLIC_' "$ENV_FILE" || true)
+
+          # Fallback: if the GH Actions secret is set, overwrite the pulled
+          # value. This rescues the build whenever vercel pull returns an
+          # empty value (token scope, dashboard misconfig, etc.).
+          override_env() {
+            local key="$1" val="$2"
+            [ -z "$val" ] && return 0
+            # Remove any existing line (empty or not) and append the override.
+            sed -i.bak "/^${key}=/d" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+            # Quote-safe: store in double quotes, escaping any embedded " and \.
+            esc=$(printf '%s' "$val" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            printf '%s="%s"\n' "$key" "$esc" >> "$ENV_FILE"
+            echo "  override applied: $key (len=${#val})"
+          }
+          override_env NEXT_PUBLIC_SUPABASE_URL "$FALLBACK_NEXT_PUBLIC_SUPABASE_URL"
+          override_env NEXT_PUBLIC_SUPABASE_ANON_KEY "$FALLBACK_NEXT_PUBLIC_SUPABASE_ANON_KEY"
+
           mkdir -p apps/dashboard
           cp "$ENV_FILE" apps/dashboard/.env.production.local
           echo "copied -> apps/dashboard/.env.production.local"
+
+          # Runtime confirmation: load the file the same way Next.js does
+          # and print value-lengths of what would actually be inlined. If
+          # this shows 0 on either key, next build WILL fail regardless of
+          # what the earlier textual diagnostic printed.
+          cat > /tmp/dotenv_check.js <<'NODE_EOF'
+          const fs = require('fs');
+          const txt = fs.readFileSync('apps/dashboard/.env.production.local', 'utf8');
+          const env = {};
+          for (const raw of txt.split(/\r?\n/)) {
+            const m = raw.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+            if (!m) continue;
+            let v = m[2].trim();
+            const dq = v.startsWith('"') && v.endsWith('"');
+            const sq = v.startsWith("'") && v.endsWith("'");
+            if (dq || sq) v = v.slice(1, -1);
+            env[m[1]] = v;
+          }
+          for (const k of ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']) {
+            console.log('  ' + k + ': value-len=' + (env[k] ? env[k].length : 0));
+          }
+          NODE_EOF
+          echo "runtime view (Node dotenv parse of apps/dashboard/.env.production.local):"
+          node /tmp/dotenv_check.js || echo "  (node dotenv check failed)"
 
           echo ""
           echo "=== vercel build ==="
