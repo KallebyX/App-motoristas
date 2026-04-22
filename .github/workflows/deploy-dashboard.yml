@@ -1,5 +1,5 @@
 name: Deploy dashboard (Vercel)
-# retrigger after lockfile regen
+# retrigger 2026-04-21
 
 on:
   push:
