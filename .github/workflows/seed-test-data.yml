@@ -1,0 +1,88 @@
+name: Seed test data (Supabase)
+# Manual only — creates 1 gestor + 3 motoristas in the demo company so the
+# pilot can be exercised end-to-end without touching the Supabase dashboard.
+# Idempotent: re-runs only patch missing rows; no duplicates are created.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install @supabase/supabase-js (isolated dir, no workspace touch)
+        run: |
+          mkdir -p .tmp-seed
+          cd .tmp-seed
+          echo '{"name":"tmp","private":true,"type":"module"}' > package.json
+          pnpm add @supabase/supabase-js@2.46.1 --ignore-workspace --silent
+          cp ../scripts/seed-test-users.mjs ./seed.mjs
+
+      - name: Run seed
+        id: seed
+        continue-on-error: true
+        env:
+          SEED_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SEED_SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SEED_GESTOR_EMAIL: ${{ vars.SEED_GESTOR_EMAIL }}
+          SEED_GESTOR_PASSWORD: ${{ secrets.SEED_GESTOR_PASSWORD }}
+        working-directory: .tmp-seed
+        run: |
+          set +e
+          exec > >(tee ../seed.log) 2>&1
+          for name in SEED_SUPABASE_URL SEED_SUPABASE_SERVICE_ROLE; do
+            val="${!name}"
+            if [ -z "$val" ]; then echo "::error::$name is missing. Add it to GH Actions secrets."; exit 1; fi
+            echo "$name: set (length=${#val})"
+          done
+          node ./seed.mjs
+          echo "seed exit: $?"
+
+      - name: Post log to issue #3
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SVC: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PW: ${{ secrets.SEED_GESTOR_PASSWORD }}
+        run: |
+          sed -i "s|${SVC}|***SERVICE_ROLE***|g" seed.log 2>/dev/null || true
+          if [ -n "$PW" ]; then sed -i "s|${PW}|***GESTOR_PASSWORD***|g" seed.log 2>/dev/null || true; fi
+          # Also scrub generated passwords on the "password : X" lines just in
+          # case the log ends up being exported elsewhere. The workflow_dispatch
+          # run itself already echoes them to its UI so the operator can copy
+          # them before this redaction runs — this only affects the issue #3
+          # comment.
+          sed -i -E 's/(password[[:space:]]*:[[:space:]]*)[^[:space:]]+/\1***REDACTED***/g' seed.log 2>/dev/null || true
+          LOG=$(cat seed.log 2>/dev/null || echo 'no log')
+          cat > body.md <<EOF
+          ### Seed test data run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          Outcome: **${{ steps.seed.outcome }}**
+
+          <details><summary>seed.log (secrets redacted)</summary>
+
+          \`\`\`
+          $LOG
+          \`\`\`
+
+          </details>
+          EOF
+          gh api repos/${{ github.repository }}/issues/3/comments \
+            --method POST \
+            -f "body=$(cat body.md)" > /dev/null
+
+      - name: Propagate failure
+        if: steps.seed.outcome == 'failure'
+        run: exit 1
