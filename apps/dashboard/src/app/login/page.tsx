@@ -38,14 +38,47 @@ export default function Login() {
     }
   }
 
+  function fillDemo() {
+    setEmail('gestor.demo@appmotoristas.dev');
+    setPassword('AppMotoristas!2026');
+  }
+
   return (
     <main className="page" style={{ maxWidth: 420 }}>
       <h1>Entrar no painel</h1>
-      <p style={{ color: 'var(--muted)', fontSize: 11, margin: '0 0 16px' }}>
-        build: 1813fa6 · env-url:{' '}
-        {process.env.NEXT_PUBLIC_SUPABASE_URL ? '✓ ok' : '✗ missing'} · env-key:{' '}
-        {process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? '✓ ok' : '✗ missing'}
-      </p>
+      <div
+        className="card"
+        style={{
+          background: 'rgba(99, 102, 241, 0.08)',
+          border: '1px solid rgba(99, 102, 241, 0.3)',
+          marginBottom: 16,
+          fontSize: 13,
+          lineHeight: 1.5,
+        }}
+      >
+        <strong>Acesso demo (piloto-sombra)</strong>
+        <div style={{ color: 'var(--muted)', marginTop: 4 }}>
+          Email: <code>gestor.demo@appmotoristas.dev</code>
+          <br />
+          Senha: <code>AppMotoristas!2026</code>
+        </div>
+        <button
+          type="button"
+          onClick={fillDemo}
+          style={{
+            marginTop: 8,
+            background: 'transparent',
+            border: '1px solid var(--border)',
+            color: 'var(--text)',
+            padding: '6px 10px',
+            borderRadius: 6,
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          Preencher campos
+        </button>
+      </div>
       <form onSubmit={submit} className="card" style={{ display: 'grid', gap: 12 }}>
         <label>
           <div style={{ color: 'var(--muted)', fontSize: 12 }}>E-mail</div>
