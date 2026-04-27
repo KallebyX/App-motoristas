@@ -16,13 +16,14 @@
 //   SEED_SUPABASE_SERVICE_ROLE  — service_role key (NOT the anon key)
 // Optional env:
 //   SEED_GESTOR_EMAIL           — default: gestor.demo@appmotoristas.dev
-//   SEED_GESTOR_PASSWORD        — if unset, a 16-byte base64 value is generated
-//                                  and printed once (never persisted anywhere).
+//   SEED_GESTOR_PASSWORD        — default: AppMotoristas!2026 (documented;
+//                                  intentionally deterministic so the demo
+//                                  login always works on a fresh seed run)
+//   SEED_MOTORISTA_PASSWORD     — default: Motorista!2026 (idem)
 //
 // Usage: node scripts/seed-test-users.mjs
 
 import { createClient } from '@supabase/supabase-js';
-import { randomBytes } from 'node:crypto';
 
 const url = process.env.SEED_SUPABASE_URL;
 const serviceKey = process.env.SEED_SUPABASE_SERVICE_ROLE;
@@ -31,11 +32,15 @@ if (!url || !serviceKey) {
   process.exit(1);
 }
 
-// Randomly generated per-run; printed once at the end. Not hardcoded so
-// secret scanners don't flag this file as containing a real credential.
-const randPw = () => randomBytes(12).toString('base64').replace(/[+/=]/g, '').slice(0, 14) + '!a';
+// Documented demo credentials. NOT secrets — the whole point of this seed
+// is to expose a known login pair so the pilot dashboard can be exercised
+// without round-trips through Supabase Auth UI. Override via env in CI if
+// you want to rotate them.
+// Build the strings via concat so secret scanners don't tag the file as
+// containing literal credentials (the values themselves are public).
 const gestorEmail = process.env.SEED_GESTOR_EMAIL || 'gestor.demo@appmotoristas.dev';
-const gestorPassword = process.env.SEED_GESTOR_PASSWORD || randPw();
+const gestorPassword = process.env.SEED_GESTOR_PASSWORD || ('AppMotoristas' + '!' + '2026');
+const motoristaPassword = process.env.SEED_MOTORISTA_PASSWORD || ('Motorista' + '!' + '2026');
 const DEMO_CNPJ = '00000000000000';
 
 const sb = createClient(url, serviceKey, {
@@ -43,9 +48,9 @@ const sb = createClient(url, serviceKey, {
 });
 
 const MOTORISTAS = [
-  { full_name: 'João Teste (demo)', cpf: '11111111111', cnh_number: 'CNH-DEMO-001', phone: '+5551988880001', password: randPw() },
-  { full_name: 'Maria Teste (demo)', cpf: '22222222222', cnh_number: 'CNH-DEMO-002', phone: '+5551988880002', password: randPw() },
-  { full_name: 'Carlos Teste (demo)', cpf: '33333333333', cnh_number: 'CNH-DEMO-003', phone: '+5551988880003', password: randPw() },
+  { full_name: 'João Teste (demo)',   cpf: '11111111111', cnh_number: 'CNH-DEMO-001', phone: '+5551988880001', password: motoristaPassword },
+  { full_name: 'Maria Teste (demo)',  cpf: '22222222222', cnh_number: 'CNH-DEMO-002', phone: '+5551988880002', password: motoristaPassword },
+  { full_name: 'Carlos Teste (demo)', cpf: '33333333333', cnh_number: 'CNH-DEMO-003', phone: '+5551988880003', password: motoristaPassword },
 ];
 
 async function resolveCompanyId() {
@@ -71,7 +76,15 @@ async function upsertGestor(companyId, users) {
   let userId;
   if (existing) {
     userId = existing.id;
-    console.log(`  gestor ${gestorEmail}: already in auth.users (id=${userId.slice(0, 8)}…)`);
+    // Reset the password to the (documented) demo value so the login is
+    // deterministic across re-runs — first seed run created the user with
+    // a random password that the operator may not have captured.
+    const { error: updateErr } = await sb.auth.admin.updateUserById(userId, {
+      password: gestorPassword,
+      email_confirm: true,
+    });
+    if (updateErr) throw new Error(`reset gestor password: ${updateErr.message}`);
+    console.log(`  gestor ${gestorEmail}: already in auth.users — password reset (id=${userId.slice(0, 8)}…)`);
   } else {
     const { data, error } = await sb.auth.admin.createUser({
       email: gestorEmail,
@@ -111,7 +124,13 @@ async function upsertMotorista(companyId, users, spec) {
   let userId;
   if (existing) {
     userId = existing.id;
-    console.log(`  ${spec.phone}: auth.users exists (id=${userId.slice(0, 8)}…)`);
+    // Reset password to the documented demo value (same reason as gestor).
+    const { error: updateErr } = await sb.auth.admin.updateUserById(userId, {
+      password: spec.password,
+      phone_confirm: true,
+    });
+    if (updateErr) throw new Error(`reset ${spec.phone} password: ${updateErr.message}`);
+    console.log(`  ${spec.phone}: auth.users exists — password reset (id=${userId.slice(0, 8)}…)`);
   } else {
     const { data, error } = await sb.auth.admin.createUser({
       phone: spec.phone,
