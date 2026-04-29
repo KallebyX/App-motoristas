@@ -140,6 +140,13 @@ incrementa a versão e é registrada na migration + CHANGELOG. O score é
 reprocessado em lote com a nova versão (rodando `persist_session_score` via
 worker) mantendo o score antigo no audit_log.
 
+### Histórico de versões
+
+| Versão | Data | Mudanças |
+|--------|------|----------|
+| v1 | 2026-04 | Lançamento MVP — normas Basner & Dinges PVT-B (literatura internacional). |
+| v2 | _pendente_ | Recalibração com dados BR do piloto-sombra (ver § 10). |
+
 ## 9. Calibração com dados reais
 
 Plano da Fase 1 → Fase 2:
@@ -150,3 +157,78 @@ Plano da Fase 1 → Fase 2:
 3. Validar contra incidentes reportados (micro-sinistros, quase-acidentes
    auto-declarados) via correlação bivariada.
 4. Ajustar cutoffs para atingir taxa-alvo de falso vermelho ≤ 5 %.
+
+## 10. Piloto-sombra — setup técnico
+
+### Política de bloqueio durante o piloto
+
+A empresa-piloto recebe `block_policy = { "yellow": "warn", "red": "warn" }`.
+O algoritmo de scoring **calcula** o semáforo normalmente, mas a flag `blocked`
+fica sempre `false` — o motorista nunca é impedido de trabalhar.
+
+```sql
+-- Configurar empresa-piloto (executar com service_role):
+update companies
+set block_policy = '{"yellow":"warn","red":"warn"}'::jsonb
+where id = '<uuid-da-empresa-piloto>';
+```
+
+### Infraestrutura de dados
+
+A migration `0006_shadow_pilot.sql` adiciona:
+
+| Artefacto | Descrição |
+|---|---|
+| `session_scores.hard_red_reasons` | Array das regras hard-red disparadas (antes só no output do engine). |
+| `v_pilot_distributions` | View por sessão com período-do-dia (`manha`/`tarde`/`noite`/`madrugada`). |
+| `v_pilot_summary` | Percentis (p25/p50/p75) de RT e lapse rate por período e semáforo. |
+| `export_pilot_csv(company_id)` | Função que retorna CSV de todas as sessões da empresa. |
+
+### Dashboard e exportação
+
+- Página `/pilot` do painel mostra distribuições por período do dia e os
+  últimos 50 resultados com flags de hard-red.
+- A edge function `export-pilot-csv` (GET autenticado) devolve o CSV para
+  download ou automação diária.
+
+### Análise ao fim dos 30 dias
+
+Executar a seguinte consulta para obter os parâmetros a usar no v2:
+
+```sql
+-- Normas BR a partir do primeiro turno do dia (manha):
+select
+  avg(median_rt_ms)   as mean_rt,
+  stddev(median_rt_ms) as sd_rt,
+  avg(lapse_rate)     as mean_lapse,
+  stddev(lapse_rate)  as sd_lapse,
+  avg(cv_rt)          as mean_cv,
+  stddev(cv_rt)       as sd_cv
+from v_pilot_distributions
+where periodo_dia = 'manha'
+  and company_id  = '<uuid-da-empresa-piloto>';
+```
+
+Com os novos μ/σ, atualizar `packages/scoring/src/norms.ts`:
+
+```ts
+// v2 — calibrado com dados BR (piloto-sombra 30 dias)
+export const PVT_B_NORMS = {
+  medianRtMs: { mean: <BR_MEAN>, sd: <BR_SD> },
+  lapseRate:  { mean: <BR_LAPSE_MEAN>, sd: <BR_LAPSE_SD> },
+  cvRt:       { mean: <BR_CV_MEAN>,    sd: <BR_CV_SD>    },
+} as const;
+
+export const ALGORITHM_VERSION = 'v2';
+```
+
+### Critérios go/no-go para produção
+
+| Critério | Meta |
+|---|---|
+| Falso-vermelho no piloto | ≤ 5 % |
+| ROC AUC vs incidentes auto-reportados | ≥ 0.7 |
+| Aderência dos motoristas | ≥ 85 % |
+
+Só após atingir todas as metas mudar o `block_policy` default para
+`{ "yellow": "warn", "red": "block" }`.
