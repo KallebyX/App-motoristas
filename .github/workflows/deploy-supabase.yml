@@ -1,0 +1,175 @@
+name: Deploy Supabase (DB + functions)
+# trigger smoke test chain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/functions/**'
+      - '.github/workflows/deploy-supabase.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SUPABASE_REGION: us-west-2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Diagnose + deploy
+        id: deploy
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          RAW_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          RAW_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          RAW_PW: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          set +e
+          exec > >(tee deploy.log) 2>&1
+
+          echo "=== Supabase CLI version ==="
+          timeout 10 supabase --version || true
+
+          TOKEN=$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')
+          REF=$(printf '%s'   "$RAW_REF"   | tr -d '[:space:]')
+          PW=$(printf '%s'    "$RAW_PW"    | tr -d '[:space:]')
+
+          echo ""
+          echo "=== Diagnose secrets ==="
+          echo "TOKEN length=${#TOKEN} prefix=${TOKEN:0:4}"
+          echo "REF length=${#REF} value=${REF}"
+          echo "PW length=${#PW}"
+
+          echo ""
+          echo "=== Validate token ==="
+          http=$(curl -sS --max-time 15 -o proj.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://api.supabase.com/v1/projects/${REF}")
+          echo "HTTP ${http}"
+          if [ "$http" != "200" ]; then
+            echo "Body:"; cat proj.json; echo ""
+            echo "::error::PAT inválido ou sem acesso. Gere novo token."
+            exit 1
+          fi
+          api_region=$(python3 -c 'import json; print(json.load(open("proj.json")).get("region",""))' 2>/dev/null)
+          echo "API region: $api_region"
+          if [ -n "$api_region" ]; then SUPABASE_REGION="$api_region"; fi
+
+          echo ""
+          echo "=== Query pooler config ==="
+          curl -sS --max-time 15 -o pool.json -w 'HTTP %{http_code}\n' \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://api.supabase.com/v1/projects/${REF}/config/database/pooler" || true
+          python3 <<'PY'
+          import json
+          try:
+              d = json.load(open("pool.json"))
+          except Exception as e:
+              print("pool parse error:", e); raise SystemExit
+          print("pool payload type:", type(d).__name__)
+          if isinstance(d, list):
+              print("pool list length:", len(d))
+              for i, it in enumerate(d):
+                  print(f"--- item {i} ---")
+                  print(json.dumps({k:v for k,v in it.items() if k != "connection_string"}, indent=2))
+          else:
+              print(json.dumps({k:v for k,v in d.items() if k != "connection_string"}, indent=2))
+          PY
+
+          POOL_HOST=$(python3 -c 'import json; d=json.load(open("pool.json")); arr=d if isinstance(d,list) else [d]; first=arr[0] if arr else {}; print(first.get("db_host") or first.get("host") or "")')
+          POOL_USER=$(python3 -c 'import json; d=json.load(open("pool.json")); arr=d if isinstance(d,list) else [d]; first=arr[0] if arr else {}; print(first.get("db_user") or first.get("user") or "")')
+          POOL_PORT=$(python3 -c 'import json; d=json.load(open("pool.json")); arr=d if isinstance(d,list) else [d]; first=arr[0] if arr else {}; print(first.get("db_port") or first.get("port") or 5432)')
+
+          if [ -z "$POOL_USER" ]; then POOL_USER="postgres.${REF}"; fi
+          if [ -z "$POOL_HOST" ]; then POOL_HOST="aws-0-${SUPABASE_REGION}.pooler.supabase.com"; fi
+
+          ENC_PW=$(python3 -c 'import urllib.parse, os; print(urllib.parse.quote(os.environ["RAW_PW"].strip(), safe=""))')
+          DB_URL="postgresql://${POOL_USER}:${ENC_PW}@${POOL_HOST}:${POOL_PORT}/postgres?sslmode=require"
+          echo "DB endpoint: ${POOL_HOST}:${POOL_PORT} user=${POOL_USER}"
+
+          echo ""
+          echo "=== Apply migrations via psql ==="
+          timeout 60 psql "$DB_URL" -v ON_ERROR_STOP=1 -c "
+            create schema if not exists supabase_migrations;
+            create table if not exists supabase_migrations.schema_migrations (
+              version text primary key,
+              statements text[],
+              name text
+            );"
+          psql_bootstrap=$?
+          echo "bootstrap exit: $psql_bootstrap"
+          if [ $psql_bootstrap -ne 0 ]; then
+            echo "::error::psql cannot reach DB. Check region, pooler URL, credentials."
+            exit 1
+          fi
+
+          db_status=0
+          for f in supabase/migrations/*.sql; do
+            ver=$(basename "$f" .sql | sed 's/_.*//')
+            already=$(timeout 30 psql "$DB_URL" -Atc "select 1 from supabase_migrations.schema_migrations where version='$ver'" 2>/dev/null)
+            if [ "$already" = "1" ]; then
+              echo "skip $f (already applied)"
+              continue
+            fi
+            echo "apply $f"
+            timeout 120 psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"
+            s=$?
+            if [ $s -ne 0 ]; then db_status=$s; break; fi
+            timeout 30 psql "$DB_URL" -c "insert into supabase_migrations.schema_migrations(version,name) values('$ver','$(basename "$f" .sql)')"
+          done
+          echo "migrations exit: $db_status"
+
+          echo ""
+          echo "=== Deploy edge functions via CLI ==="
+          export SUPABASE_ACCESS_TOKEN="$TOKEN"
+          timeout 120 supabase functions deploy compute-session-score --project-ref "$REF"
+          fn1_status=$?
+          echo "fn1 exit: $fn1_status"
+
+          timeout 120 supabase functions deploy unico-webhook --project-ref "$REF" --no-verify-jwt
+          fn2_status=$?
+          echo "fn2 exit: $fn2_status"
+
+          [ $db_status -eq 0 ] && [ $fn1_status -eq 0 ] && [ $fn2_status -eq 0 ]
+
+      - name: Post log to issue #3
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          sed -i "s|${SUPABASE_ACCESS_TOKEN}|***TOKEN***|g" deploy.log 2>/dev/null || true
+          sed -i "s|${SUPABASE_DB_PASSWORD}|***PW***|g"    deploy.log 2>/dev/null || true
+          LOG=$(cat deploy.log)
+          cat > body.md <<EOF
+          ### Deploy run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) — commit \`${GITHUB_SHA:0:7}\`
+
+          Outcome: **${{ steps.deploy.outcome }}**
+
+          <details><summary>deploy.log</summary>
+
+          \`\`\`
+          $LOG
+          \`\`\`
+
+          </details>
+          EOF
+          gh api repos/${{ github.repository }}/issues/3/comments \
+            --method POST \
+            -f "body=$(cat body.md)" > /dev/null
+
+      - name: Propagate failure
+        if: steps.deploy.outcome == 'failure'
+        run: exit 1
