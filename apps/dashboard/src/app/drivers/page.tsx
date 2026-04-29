@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getSupabaseServerClient } from '@/lib/supabase-server';
 
+export const dynamic = 'force-dynamic';
+
 interface Row {
   driver_id: string;
   full_name: string;
