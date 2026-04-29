@@ -9,11 +9,12 @@
 
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.46.1';
+import { z } from 'https://esm.sh/zod@3.23.8';
+import { scoreSession } from 'npm:@app-motoristas/scoring@0.1.0';
 import {
-  BlockPolicySchema,
   SessionSubmissionSchema,
-  scoreSession,
-} from '../_shared/scoring.ts';
+  BlockPolicySchema,
+} from 'npm:@app-motoristas/shared-types@0.1.0';
 
 // Deno + Supabase function runtime types are provided by the platform.
 // deno-lint-ignore no-explicit-any
