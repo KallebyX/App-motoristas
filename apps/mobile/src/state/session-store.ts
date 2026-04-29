@@ -8,6 +8,8 @@ interface SessionDraft {
   blocks: BlockResult[];
   subjective?: SubjectiveAnswers;
   livenessVideoRef?: string;
+  /** Opaque transaction ID returned by the biometric provider after liveness. */
+  livenessProcessId?: string;
 }
 
 let draft: SessionDraft | null = null;
@@ -50,6 +52,10 @@ export function setSubjective(subjective: SubjectiveAnswers): void {
 
 export function setLivenessRef(ref: string): void {
   getDraft().livenessVideoRef = ref;
+}
+
+export function setLivenessProcessId(processId: string): void {
+  getDraft().livenessProcessId = processId;
 }
 
 export function clearDraft(): void {
