@@ -1,0 +1,152 @@
+name: Seed test data (Supabase)
+# Provisions 1 gestor + 3 motoristas in the demo company so the pilot can
+# be exercised end-to-end without touching the Supabase dashboard.
+#
+# Auto-runs after every successful "Deploy Supabase (DB + functions)" so
+# fresh migrations always come paired with logging-able test users. Also
+# exposed as workflow_dispatch for manual re-runs.
+#
+# Idempotent: re-runs only patch missing rows; no duplicates are created.
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['Deploy Supabase (DB + functions)']
+    types: [completed]
+    branches: [main]
+  # First-run bootstrap: when this workflow itself is updated on main, run
+  # once so the demo company gets its gestor/motoristas without requiring
+  # a separate manual trigger from the operator.
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/seed-test-data.yml'
+      - 'scripts/seed-test-users.mjs'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  seed:
+    # On workflow_run, only fire when the upstream deploy itself succeeded
+    # (no point seeding against a half-applied schema). Manual dispatches
+    # have no upstream, so always run.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # Resolve the service_role key by asking the Supabase Management API
+      # with the existing PAT, instead of requiring an extra repo secret.
+      # This makes the workflow self-bootstrapping: provided
+      # SUPABASE_ACCESS_TOKEN + SUPABASE_PROJECT_REF are present (already
+      # used by deploy-supabase.yml), no further setup is needed.
+      - name: Resolve service_role from Supabase Management API
+        id: keys
+        env:
+          PAT: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PAT" ] || [ -z "$REF" ]; then
+            echo "::error::Missing SUPABASE_ACCESS_TOKEN or SUPABASE_PROJECT_REF secret"
+            exit 1
+          fi
+          # GET /v1/projects/{ref}/api-keys returns [{name,api_key}, ...].
+          # `?reveal=true` is required on newer projects to receive the
+          # actual key value; older API versions ignore it harmlessly.
+          curl -sS --fail --max-time 20 \
+            -H "Authorization: Bearer ${PAT}" \
+            "https://api.supabase.com/v1/projects/${REF}/api-keys?reveal=true" \
+            -o keys.json
+          SVC=$(python3 -c '
+          import json, sys
+          data = json.load(open("keys.json"))
+          for k in data:
+              if k.get("name") == "service_role":
+                  print(k.get("api_key", ""))
+                  sys.exit(0)
+          sys.exit(1)
+          ')
+          if [ -z "$SVC" ]; then
+            echo "::error::service_role key not present in api-keys response"
+            exit 1
+          fi
+          # Also need the project URL: derived from REF.
+          URL="https://${REF}.supabase.co"
+          # Mask both before exporting so any later echo is redacted.
+          echo "::add-mask::$SVC"
+          echo "service_role_key=$SVC" >> "$GITHUB_OUTPUT"
+          echo "project_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "service_role len=${#SVC}, url=${URL}"
+          rm -f keys.json
+
+      - name: Install @supabase/supabase-js (isolated dir, no workspace touch)
+        run: |
+          mkdir -p .tmp-seed
+          cd .tmp-seed
+          echo '{"name":"tmp","private":true,"type":"module"}' > package.json
+          pnpm add @supabase/supabase-js@2.46.1 --ignore-workspace --silent
+          cp ../scripts/seed-test-users.mjs ./seed.mjs
+
+      - name: Run seed
+        id: seed
+        continue-on-error: true
+        env:
+          SEED_SUPABASE_URL: ${{ steps.keys.outputs.project_url }}
+          SEED_SUPABASE_SERVICE_ROLE: ${{ steps.keys.outputs.service_role_key }}
+          SEED_GESTOR_EMAIL: ${{ vars.SEED_GESTOR_EMAIL }}
+          SEED_GESTOR_PASSWORD: ${{ secrets.SEED_GESTOR_PASSWORD }}
+        working-directory: .tmp-seed
+        run: |
+          set +e
+          exec > >(tee ../seed.log) 2>&1
+          for name in SEED_SUPABASE_URL SEED_SUPABASE_SERVICE_ROLE; do
+            val="${!name}"
+            if [ -z "$val" ]; then echo "::error::$name is missing"; exit 1; fi
+            echo "$name: set (length=${#val})"
+          done
+          node ./seed.mjs
+          echo "seed exit: $?"
+
+      - name: Post log to issue #3
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SVC: ${{ steps.keys.outputs.service_role_key }}
+          PW: ${{ secrets.SEED_GESTOR_PASSWORD }}
+        run: |
+          if [ -n "$SVC" ]; then sed -i "s|${SVC}|***SERVICE_ROLE***|g" seed.log 2>/dev/null || true; fi
+          if [ -n "$PW" ]; then sed -i "s|${PW}|***GESTOR_PASSWORD***|g" seed.log 2>/dev/null || true; fi
+          # Also scrub any generated value after "password:" so the issue
+          # comment never renders a real credential. The Action run UI
+          # still shows them in the live log for the operator to copy.
+          sed -i -E 's/(password[[:space:]]*:[[:space:]]*)[^[:space:]]+/\1***REDACTED***/g' seed.log 2>/dev/null || true
+          LOG=$(cat seed.log 2>/dev/null || echo 'no log')
+          cat > body.md <<EOF
+          ### Seed test data run [${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          Outcome: **${{ steps.seed.outcome }}** — triggered by **${{ github.event_name }}**
+
+          <details><summary>seed.log (secrets redacted)</summary>
+
+          \`\`\`
+          $LOG
+          \`\`\`
+
+          </details>
+          EOF
+          gh api repos/${{ github.repository }}/issues/3/comments \
+            --method POST \
+            -f "body=$(cat body.md)" > /dev/null
+
+      - name: Propagate failure
+        if: steps.seed.outcome == 'failure'
+        run: exit 1

@@ -138,11 +138,21 @@ export function computeBlockMetrics(block: BlockResult): BlockMetrics {
   const valid = block.trials.filter((t) => !t.isFalseStart && t.rtMs != null);
   const rts = valid.map((t) => t.rtMs as number);
   const falseStarts = block.trials.filter((t) => t.isFalseStart).length;
-  const med = rts.length > 0 ? median(rts) : 0;
-  const lapses = valid.filter((t) => t.isLapse).length;
-  const lapseRate = valid.length > 0 ? lapses / valid.length : 0;
-  const cv = rts.length > 1 ? coefficientOfVariation(rts) : 0;
   const falseStartRate = block.trials.length > 0 ? falseStarts / block.trials.length : 0;
+  // Match scorer.ts: penalize blocks with no valid trials (all missed/false-start).
+  if (valid.length === 0) {
+    return {
+      medianRtMs: PVT_B_NORMS.medianRtMs.mean + 4 * PVT_B_NORMS.medianRtMs.sd,
+      lapseRate: 1,
+      cvRt: PVT_B_NORMS.cvRt.mean + 4 * PVT_B_NORMS.cvRt.sd,
+      falseStartRate,
+      zScore: -4,
+    };
+  }
+  const med = median(rts);
+  const lapses = valid.filter((t) => t.isLapse).length;
+  const lapseRate = lapses / valid.length;
+  const cv = rts.length > 1 ? coefficientOfVariation(rts) : 0;
   const zs = [
     -zScore(med, PVT_B_NORMS.medianRtMs),
     -zScore(lapseRate, PVT_B_NORMS.lapseRate),

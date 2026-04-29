@@ -15,19 +15,70 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    );
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) setError(error.message);
-    else router.push('/drivers');
+    try {
+      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      if (!url || !key) {
+        throw new Error(
+          'Config ausente: NEXT_PUBLIC_SUPABASE_URL/_ANON_KEY não estão no bundle. ' +
+            'Defina em vercel.com → Settings → Environment Variables e refaça o deploy.',
+        );
+      }
+      const supabase = createBrowserClient(url, key);
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      router.push('/drivers');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function fillDemo() {
+    setEmail('gestor.demo@appmotoristas.dev');
+    setPassword('AppMotoristas!2026');
   }
 
   return (
     <main className="page" style={{ maxWidth: 420 }}>
       <h1>Entrar no painel</h1>
+      <div
+        className="card"
+        style={{
+          background: 'rgba(99, 102, 241, 0.08)',
+          border: '1px solid rgba(99, 102, 241, 0.3)',
+          marginBottom: 16,
+          fontSize: 13,
+          lineHeight: 1.5,
+        }}
+      >
+        <strong>Acesso demo (piloto-sombra)</strong>
+        <div style={{ color: 'var(--muted)', marginTop: 4 }}>
+          Email: <code>gestor.demo@appmotoristas.dev</code>
+          <br />
+          Senha: <code>AppMotoristas!2026</code>
+        </div>
+        <button
+          type="button"
+          onClick={fillDemo}
+          style={{
+            marginTop: 8,
+            background: 'transparent',
+            border: '1px solid var(--border)',
+            color: 'var(--text)',
+            padding: '6px 10px',
+            borderRadius: 6,
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          Preencher campos
+        </button>
+      </div>
       <form onSubmit={submit} className="card" style={{ display: 'grid', gap: 12 }}>
         <label>
           <div style={{ color: 'var(--muted)', fontSize: 12 }}>E-mail</div>

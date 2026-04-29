@@ -183,6 +183,29 @@ describe('scoreSession — metrics sanity', () => {
   });
 });
 
+describe('scoreSession — block with zero valid trials', () => {
+  it('penalizes (not rewards) a block where every trial is a false start', () => {
+    const block: BlockResult = {
+      block: 'pvt_b',
+      startedAt: '2026-04-19T12:00:00.000Z',
+      endedAt: '2026-04-19T12:00:30.000Z',
+      trials: Array.from({ length: 5 }, () => ({
+        stimulusAtMs: 0,
+        responseAtMs: 50,
+        rtMs: null,
+        isLapse: false,
+        isFalseStart: true,
+      })),
+    };
+    const out = scoreSession({
+      submission: makeSubmission({ blocks: [block] }),
+      policy: strictPolicy,
+    });
+    expect(out.trafficLight).toBe('red');
+    expect(out.blockMetrics['pvt_b']!.zScore).toBe(-4);
+  });
+});
+
 describe('scoreSession — output contract', () => {
   it('always includes algorithm version and numeric scores', () => {
     const out = scoreSession({ submission: makeSubmission(), policy: strictPolicy });
